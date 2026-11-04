@@ -1,0 +1,14 @@
+{
+  "name": "meeting-action-agent-web",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "会议行动助手 Web Demo：从会议转写到结构化待办、台账、查询与关单。",
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test tests/engine.test.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

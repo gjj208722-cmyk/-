@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: meeting-action-agent
+    runtime: node
+    plan: free
+    buildCommand: "node --version"
+    startCommand: "node server.mjs"
+    envVars:
+      - key: COZE_BOT_ID
+        value: 7695371178416160822
+      - key: COZE_API_TOKEN
+        sync: false

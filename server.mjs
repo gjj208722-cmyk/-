@@ -1,0 +1,362 @@
+import http from "node:http";
+import { readFile, stat } from "node:fs/promises";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const ROOT = path.dirname(fileURLToPath(import.meta.url));
+loadDotEnv(path.join(ROOT, ".env"));
+const PORT = Number(process.env.PORT || 4173);
+const COZE_API_BASE = (process.env.COZE_API_BASE || "https://api.coze.cn").replace(/\/$/, "");
+const COZE_API_TOKEN = process.env.COZE_API_TOKEN || "";
+const COZE_BOT_ID = process.env.COZE_BOT_ID || "";
+const AGENT_READY = Boolean(COZE_API_TOKEN && COZE_BOT_ID);
+
+function loadDotEnv(file) {
+  try {
+    const content = readFileSync(file, "utf8");
+    for (const rawLine of content.split(/\r?\n/)) {
+      const line = rawLine.trim();
+      if (!line || line.startsWith("#")) continue;
+      const index = line.indexOf("=");
+      if (index < 1) continue;
+      const key = line.slice(0, index).trim();
+      let value = line.slice(index + 1).trim();
+      if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) value = value.slice(1, -1);
+      if (!(key in process.env)) process.env[key] = value;
+    }
+  } catch {
+    // .env is optional.
+  }
+}
+
+const MIME = {
+  ".html": "text/html; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
+  ".ico": "image/x-icon",
+  ".md": "text/markdown; charset=utf-8"
+};
+
+const server = http.createServer(async (req, res) => {
+  try {
+    const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+    if (url.pathname === "/api/health") return health(res);
+    if (url.pathname === "/api/agent" && req.method === "POST") return agent(req, res);
+    if (url.pathname.startsWith("/api/")) return json(res, 404, { ok: false, error: "接口不存在" });
+    if (req.method !== "GET" && req.method !== "HEAD") return json(res, 405, { ok: false, error: "Method not allowed" });
+    return serveStatic(url.pathname, req, res);
+  } catch (error) {
+    console.error(error);
+    return json(res, 500, { ok: false, error: "服务端发生异常", detail: error.message });
+  }
+});
+
+function health(res) {
+  return json(res, 200, {
+    ok: true,
+    mode: AGENT_READY ? "coze" : "demo",
+    agent: AGENT_READY,
+    provider: AGENT_READY ? "coze" : "local",
+    reason: AGENT_READY
+      ? "Coze Agent API 已配置，服务端代理可用。"
+      : "未配置 COZE_API_TOKEN / COZE_BOT_ID，当前使用本地演示引擎。"
+  });
+}
+
+async function agent(req, res) {
+  if (!AGENT_READY) {
+    return json(res, 503, {
+      ok: false,
+      error: "Agent 未配置：请设置 COZE_API_TOKEN 和 COZE_BOT_ID 后重启服务。"
+    });
+  }
+
+  let body;
+  try {
+    body = await readJsonBody(req);
+  } catch (error) {
+    return json(res, 400, { ok: false, error: error.message });
+  }
+
+  const transcript = String(body.transcript || "").trim();
+  const meetingDate = String(body.meetingDate || "").trim();
+  if (!transcript) return json(res, 400, { ok: false, error: "transcript 不能为空" });
+  if (transcript.length > 60000) return json(res, 413, { ok: false, error: "单次转写过长，请按 90 分钟以内切分后重试。" });
+
+  const prompt = buildPrompt({
+    transcript,
+    meetingDate,
+    title: String(body.title || "").trim(),
+    participants: Array.isArray(body.participants) ? body.participants : []
+  });
+
+  try {
+    const content = await callCoze(prompt);
+    const parsed = parseAgentJson(content);
+    return json(res, 200, {
+      ok: true,
+      provider: "coze",
+      meeting: normalizeAgentResult(parsed, meetingDate),
+      meta: { rawLength: content.length }
+    });
+  } catch (error) {
+    console.error("Coze agent error:", error.message);
+    return json(res, 502, {
+      ok: false,
+      error: "Coze Agent 调用失败",
+      detail: error.message,
+      raw: error.raw ? String(error.raw).slice(0, 3000) : undefined
+    });
+  }
+}
+
+function buildPrompt({ transcript, meetingDate, title, participants }) {
+  return `你是“会议行动助手”的结构化抽取节点。只输出一个合法 JSON 对象，不要 Markdown、代码围栏或解释。
+
+会议日期 meetingDate：${meetingDate}
+会议主题：${title || "未填写"}
+参会人：${participants.join("、") || "从转写中识别"}
+
+输出 JSON 结构：
+{
+  "title": "会议主题",
+  "minutes": {
+    "overview": "2-4 句会议摘要",
+    "conclusions": ["关键结论"],
+    "risks": ["明确风险"],
+    "unresolved": ["悬而未决事项"]
+  },
+  "tasks": [
+    {
+      "title": "任务动作 + 对象",
+      "owner": "负责人；没有依据写待定",
+      "due": "YYYY-MM-DD；无法解析写空字符串",
+      "status": "todo",
+      "confidence": "clear | inferred | needs",
+      "priority": "high | medium | low",
+      "sourceQuote": "必须逐字摘自原始转写的原句",
+      "sourceSpeaker": "说话人",
+      "sourceTime": "转写中的时间；没有就写空字符串"
+    }
+  ]
+}
+
+硬规则：
+1. 相对日期必须以 meetingDate 为唯一锚点换算，不得使用系统当天；无法解析就留空。
+2. 负责人和截止时间没有原文依据时写“待定”/空字符串，禁止猜测。
+3. 每条任务必须有 sourceQuote，且 sourceQuote 必须出现在原文中。
+4. 只抽取有明确动作或交付物的待办；闲聊、确认语气、重复表述不单独成任务。
+5. 同一负责人、同一动作的重复表述合并。
+6. 输出 JSON 可被 JSON.parse 直接解析。
+7. 会议明确提到某项工作需要做、但负责人或时间未定（如“谁做？回头再分”），必须保留为任务，owner 写“待定”，due 写空字符串，confidence 写“needs”。
+
+原始转写：
+"""
+${transcript}
+"""`;
+}
+
+async function callCoze(prompt) {
+  const created = await fetchJson(`${COZE_API_BASE}/v3/chat`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${COZE_API_TOKEN}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      bot_id: COZE_BOT_ID,
+      user_id: "meeting-action-agent-web",
+      stream: false,
+      additional_messages: [{ role: "user", content: prompt, content_type: "text" }]
+    })
+  }, 45000);
+
+  if (created.code && created.code !== 0) throw new Error(created.msg || created.message || `Coze 创建会话失败：${created.code}`);
+  const chat = created.data || created;
+  const chatId = chat.id;
+  const conversationId = chat.conversation_id;
+  if (!chatId || !conversationId) throw new Error("Coze 未返回 chat_id / conversation_id");
+
+  let status = chat.status;
+  for (let i = 0; i < 100; i += 1) {
+    if (status === "completed") break;
+    if (["failed", "canceled", "requires_action"].includes(status)) throw new Error(`Coze 会话状态异常：${status}`);
+    await sleep(900);
+    const retrieved = await fetchJson(`${COZE_API_BASE}/v3/chat/retrieve?conversation_id=${encodeURIComponent(conversationId)}&chat_id=${encodeURIComponent(chatId)}`, {
+      headers: { Authorization: `Bearer ${COZE_API_TOKEN}` }
+    }, 30000);
+    const data = retrieved.data || retrieved;
+    status = data.status;
+  }
+  if (status !== "completed") throw new Error(`Coze 会话超时，最后状态：${status}`);
+
+  const listed = await fetchJson(`${COZE_API_BASE}/v3/chat/message/list?conversation_id=${encodeURIComponent(conversationId)}&chat_id=${encodeURIComponent(chatId)}`, {
+    headers: { Authorization: `Bearer ${COZE_API_TOKEN}` }
+  }, 30000);
+  const messages = listed.data || listed.messages || [];
+  const answers = messages
+    .filter((message) => message.role === "assistant" && message.type === "answer")
+    .map((message) => normalizeMessageContent(message.content))
+    .filter(Boolean);
+  const fallback = messages
+    .filter((message) => message.role === "assistant")
+    .map((message) => normalizeMessageContent(message.content))
+    .filter(Boolean);
+  const content = answers.at(-1) || fallback.at(-1) || "";
+  if (!content) throw new Error("Coze 没有返回 assistant answer");
+  return content;
+}
+
+function normalizeMessageContent(content) {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) return content.map((item) => item?.text || item?.content || "").join("\n");
+  if (content && typeof content === "object") return content.text || content.content || JSON.stringify(content);
+  return "";
+}
+
+function parseAgentJson(content) {
+  let text = String(content || "").trim();
+  text = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
+  try {
+    return JSON.parse(text);
+  } catch {
+    const start = text.indexOf("{");
+    const end = text.lastIndexOf("}");
+    if (start >= 0 && end > start) {
+      try {
+        return JSON.parse(text.slice(start, end + 1));
+      } catch {
+        // Fall through with raw content for diagnosis.
+      }
+    }
+    const error = new Error("Agent 返回内容无法解析为结构化 JSON");
+    error.raw = text;
+    throw error;
+  }
+}
+
+function normalizeAgentResult(parsed, meetingDate) {
+  const tasks = Array.isArray(parsed?.tasks) ? parsed.tasks.map((task) => {
+    const owner = String(task.owner || "待定").trim() || "待定";
+    const due = normalizeDue(task.due);
+    let confidence = ["clear", "inferred", "needs"].includes(task.confidence) ? task.confidence : "clear";
+    if (owner === "待定" || !due) confidence = "needs";
+    return {
+      title: String(task.title || "").trim(),
+      owner,
+      due,
+      status: ["todo", "doing", "done"].includes(task.status) ? task.status : "todo",
+      confidence,
+      priority: ["high", "medium", "low"].includes(task.priority) ? task.priority : "medium",
+      sourceQuote: String(task.sourceQuote || "").trim(),
+      sourceSpeaker: String(task.sourceSpeaker || "").trim(),
+      sourceTime: String(task.sourceTime || "").trim()
+    };
+  }).filter((task) => task.title) : [];
+  return {
+    title: String(parsed?.title || "").trim(),
+    meetingDate,
+    tasks,
+    minutes: {
+      overview: String(parsed?.minutes?.overview || "").trim(),
+      conclusions: toStringArray(parsed?.minutes?.conclusions),
+      risks: toStringArray(parsed?.minutes?.risks),
+      unresolved: toStringArray(parsed?.minutes?.unresolved)
+    }
+  };
+}
+
+function normalizeDue(value) {
+  const text = String(value || "").trim();
+  return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : "";
+}
+
+function toStringArray(value) {
+  return Array.isArray(value) ? value.map((item) => String(item || "").trim()).filter(Boolean) : [];
+}
+
+async function fetchJson(url, options = {}, timeoutMs = 30000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { ...options, signal: controller.signal });
+    const text = await response.text();
+    let data;
+    try {
+      data = text ? JSON.parse(text) : {};
+    } catch {
+      data = { raw: text };
+    }
+    if (!response.ok) throw new Error(data.msg || data.message || data.error || `HTTP ${response.status}`);
+    return data;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function readJsonBody(req) {
+  let total = 0;
+  const chunks = [];
+  for await (const chunk of req) {
+    total += chunk.length;
+    if (total > 2 * 1024 * 1024) throw new Error("请求体超过 2MB 限制");
+    chunks.push(chunk);
+  }
+  const text = Buffer.concat(chunks).toString("utf8");
+  try {
+    return text ? JSON.parse(text) : {};
+  } catch {
+    throw new Error("请求体不是合法 JSON");
+  }
+}
+
+async function serveStatic(pathname, req, res) {
+  const decoded = decodeURIComponent(pathname);
+  const relative = decoded === "/" ? "index.html" : decoded.replace(/^\/+/, "");
+  const target = path.resolve(ROOT, relative);
+  if (!target.startsWith(ROOT + path.sep) && target !== path.join(ROOT, "index.html")) {
+    return json(res, 403, { ok: false, error: "Forbidden" });
+  }
+  let info;
+  try {
+    info = await stat(target);
+  } catch {
+    return json(res, 404, { ok: false, error: "文件不存在" });
+  }
+  const file = info.isDirectory() ? path.join(target, "index.html") : target;
+  const content = await readFile(file);
+  const ext = path.extname(file).toLowerCase();
+  const appAsset = [".html", ".js", ".css", ".svg"].includes(ext);
+  res.writeHead(200, {
+    "Content-Type": MIME[ext] || "application/octet-stream",
+    "Cache-Control": appAsset ? "no-store" : "public, max-age=3600"
+  });
+  if (req.method === "HEAD") return res.end();
+  return res.end(content);
+}
+
+function json(res, status, payload) {
+  const body = JSON.stringify(payload);
+  res.writeHead(status, {
+    "Content-Type": "application/json; charset=utf-8",
+    "Cache-Control": "no-store",
+    "Content-Length": Buffer.byteLength(body)
+  });
+  return res.end(body);
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+server.listen(PORT, () => {
+  console.log(`Meeting Action Agent web: http://localhost:${PORT}`);
+  console.log(`Agent mode: ${AGENT_READY ? "Coze API" : "local demo"}`);
+});
