@@ -19,10 +19,11 @@ import {
   taskStats
 } from "./engine.js";
 import { buildSeedState, defaultDraft, emptyDraftFromSample, participantsLibrary, sampleTranscripts } from "./data.js";
-import { checkAgentHealth, runRemoteAgent } from "./api.js";
+import { checkAgentHealth, loginAdminAgent, logoutAdminAgent, runRemoteAgent } from "./api.js";
 
 const STORAGE_KEY = "meeting-action-agent:web:v2";
 const PROCESS_STEPS = ["解析文本", "抽取事实", "逐条落库", "生成文档"];
+const ADMIN_PANEL = new URLSearchParams(window.location.search).get("admin") === "1";
 const NAV_ITEMS = [
   { id: "workbench", label: "工作台", icon: "workbench", caption: "整理会议" },
   { id: "ledger", label: "任务台账", icon: "tasks", caption: "执行跟踪" },
@@ -43,6 +44,7 @@ let ui = {
   ],
   health: { ok: false, mode: "checking", agent: false, reason: "正在检测 Agent 服务…" },
   settingsOpen: false,
+  adminBusy: false,
   modal: null,
   pendingStatus: null,
   lastProcessed: null
@@ -706,7 +708,23 @@ function scrollChatBottom() {
 
 function renderSettingsModal() {
   const remote = ui.health.agent;
+  const adminLocked = Boolean(ui.health.adminLocked);
   const selected = state.settings.engine === "coze" && remote ? "coze" : "local";
+  const cozeStatus = remote ? "已解锁" : adminLocked ? "管理员锁定" : "未配置";
+  const statusTitle = remote ? "服务端代理已连接" : adminLocked ? "Coze Agent 已锁定" : "当前未检测到 Agent 服务";
+  const setupHint = !remote && !adminLocked ? `<div class="code-hint">COZE_API_TOKEN=...<br>COZE_BOT_ID=...<br>node server.mjs</div>` : "";
+  const adminBlock = ADMIN_PANEL && adminLocked ? `
+          <div class="admin-unlock">
+            <div class="admin-unlock-head"><strong>管理员临时解锁</strong><span>输入服务端口令；仅当前浏览器 2 小时内可使用，普通访客无法选择或调用 Coze。</span></div>
+            <div class="admin-unlock-row">
+              <input class="input" id="admin-agent-key" type="password" autocomplete="current-password" placeholder="管理员口令" ${ui.adminBusy ? "disabled" : ""} />
+              <button class="btn btn-primary" type="button" data-action="admin-unlock" ${ui.adminBusy ? "disabled" : ""}>${ui.adminBusy ? "解锁中…" : "解锁"}</button>
+            </div>
+          </div>` : remote && ui.health.adminSession ? `
+          <div class="admin-session">
+            <span>管理员会话已启用，最多持续 2 小时。</span>
+            <button class="text-action" type="button" data-action="admin-lock">立即锁定</button>
+          </div>` : "";
   $("#modal-root").innerHTML = `
     <div class="modal-overlay" data-action="close-modal">
       <section class="modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
@@ -721,11 +739,12 @@ function renderSettingsModal() {
           </label>
           <label class="engine-option ${selected === "coze" ? "selected" : ""} ${remote ? "" : "disabled"}" data-action="select-engine" data-engine="coze">
             <input type="radio" name="engine" ${selected === "coze" ? "checked" : ""} ${remote ? "" : "disabled"} />
-            <span><strong>Coze Agent API ${remote ? "· 已就绪" : "· 未配置"}</strong><span>前端只请求本机 <span class="mono">/api/agent</span>；Node 服务读取环境变量后调用 Coze，再把结构化结果返回页面。</span></span>
+            <span><strong>Coze Agent API · ${cozeStatus}</strong><span>前端只请求 <span class="mono">/api/agent</span>；Node 服务验证管理员会话后才会调用 Coze。</span></span>
           </label>
+          ${adminBlock}
           <div class="settings-status">
             ${icon(remote ? "check" : "link")}
-            <div><strong>${remote ? "服务端代理已连接" : "当前未检测到 Agent 服务"}</strong><br>${esc(ui.health.reason || "使用本地演示引擎即可完整运行。")}${remote ? "" : `<div class="code-hint">COZE_API_TOKEN=...<br>COZE_BOT_ID=...<br>node server.mjs</div>`}</div>
+            <div><strong>${statusTitle}</strong><br>${esc(ui.health.reason || "使用本地演示引擎即可完整运行。")}${setupHint}</div>
           </div>
         </div>
         <div class="modal-foot">
@@ -1080,6 +1099,40 @@ function selectEngine(engine) {
   showToast(engine === "coze" ? "已切换到 Coze Agent。" : "已切换到本地演示引擎。", "success");
 }
 
+async function unlockAdminAgent() {
+  if (ui.adminBusy) return;
+  const key = $("#admin-agent-key")?.value.trim();
+  if (!key) {
+    showToast("请输入管理员口令。", "warning");
+    return;
+  }
+  ui.adminBusy = true;
+  renderSettingsModal();
+  try {
+    await loginAdminAgent(key);
+    await refreshHealth(false);
+    if (!ui.health.agent) throw new Error("会话已建立，但 Agent 仍未启用。");
+    ui.adminBusy = false;
+    selectEngine("coze");
+    showToast("管理员会话已启用，当前浏览器可调用 Coze，最多 2 小时。", "success");
+  } catch (error) {
+    ui.adminBusy = false;
+    renderSettingsModal();
+    showToast(error.message || "管理员解锁失败。", "error");
+  }
+}
+
+async function lockAdminAgent() {
+  try {
+    await logoutAdminAgent();
+  } catch {
+    // Clearing the local UI is still safe if the session already expired.
+  }
+  await refreshHealth(false);
+  selectEngine("local");
+  showToast("管理员会话已结束，Coze 已重新锁定。", "success");
+}
+
 async function refreshHealth(showFeedback = true) {
   ui.health = await checkAgentHealth();
   if (!ui.health.agent && state.settings.engine === "coze") state.settings.engine = "local";
@@ -1143,6 +1196,8 @@ function handleClick(event) {
     "close-modal": () => closeModal(),
     "check-health": () => refreshHealth(true),
     "select-engine": () => selectEngine(engine),
+    "admin-unlock": () => unlockAdminAgent(),
+    "admin-lock": () => lockAdminAgent(),
     "reset-demo": () => resetDemo(),
     "ledger-filter": () => { state.ui.ledgerFilter = filter; render(); },
     "open-meeting": () => openMeeting(id),

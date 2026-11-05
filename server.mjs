@@ -1,4 +1,5 @@
 import http from "node:http";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import path from "node:path";
@@ -12,7 +13,11 @@ const COZE_API_TOKEN = process.env.COZE_API_TOKEN || "";
 const COZE_BOT_ID = process.env.COZE_BOT_ID || "";
 const AGENT_CONFIGURED = Boolean(COZE_API_TOKEN && COZE_BOT_ID);
 const PUBLIC_AGENT_ENABLED = process.env.PUBLIC_AGENT_ENABLED === "true";
-const AGENT_READY = PUBLIC_AGENT_ENABLED && AGENT_CONFIGURED;
+const ADMIN_AGENT_KEY = process.env.ADMIN_AGENT_KEY || "";
+const ADMIN_SESSION_TTL_MS = 2 * 60 * 60 * 1000;
+const ADMIN_COOKIE = "maa_admin";
+const adminSessions = new Map();
+const adminLoginAttempts = new Map();
 
 function loadDotEnv(file) {
   try {
@@ -49,8 +54,10 @@ const MIME = {
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
-    if (url.pathname === "/api/health") return health(res);
+    if (url.pathname === "/api/health") return health(req, res);
     if (url.pathname === "/api/agent" && req.method === "POST") return agent(req, res);
+    if (url.pathname === "/api/admin/login" && req.method === "POST") return adminLogin(req, res);
+    if (url.pathname === "/api/admin/logout" && req.method === "POST") return adminLogout(req, res);
     if (url.pathname.startsWith("/api/")) return json(res, 404, { ok: false, error: "接口不存在" });
     if (req.method !== "GET" && req.method !== "HEAD") return json(res, 405, { ok: false, error: "Method not allowed" });
     return serveStatic(url.pathname, req, res);
@@ -60,28 +67,37 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-function health(res) {
+function health(req, res) {
+  const adminSession = hasAdminSession(req);
+  const agentReady = AGENT_CONFIGURED && (PUBLIC_AGENT_ENABLED || adminSession);
   return json(res, 200, {
     ok: true,
-    mode: AGENT_READY ? "coze" : "demo",
-    agent: AGENT_READY,
-    provider: AGENT_READY ? "coze" : "local",
-    reason: AGENT_READY
-      ? "Coze Agent API 已配置，服务端代理可用。"
+    mode: agentReady ? "coze" : "demo",
+    agent: agentReady,
+    provider: agentReady ? "coze" : "local",
+    adminLocked: Boolean(AGENT_CONFIGURED && ADMIN_AGENT_KEY && !agentReady),
+    adminSession,
+    reason: agentReady
+      ? adminSession
+        ? "管理员会话已连接，当前浏览器可临时调用 Coze Agent。"
+        : "Coze Agent API 已配置，服务端代理可用。"
       : !AGENT_CONFIGURED
         ? "未配置 COZE_API_TOKEN / COZE_BOT_ID，当前使用本地演示引擎。"
-        : "公网远程 Agent 已关闭，当前使用本地演示引擎。"
+        : ADMIN_AGENT_KEY
+          ? "远程 Agent 已锁定；仅管理员可临时解锁。"
+          : "远程 Agent 已关闭，当前使用本地演示引擎。"
   });
 }
 
 async function agent(req, res) {
-  if (!AGENT_READY) {
+  if (!AGENT_CONFIGURED) {
     return json(res, 503, {
       ok: false,
-      error: !AGENT_CONFIGURED
-        ? "Agent 未配置：请设置 COZE_API_TOKEN 和 COZE_BOT_ID 后重启服务。"
-        : "远程 Agent 未启用：公网演示默认关闭付费接口。"
+      error: "Agent 未配置：请设置 COZE_API_TOKEN 和 COZE_BOT_ID 后重启服务。"
     });
+  }
+  if (!PUBLIC_AGENT_ENABLED && !hasAdminSession(req)) {
+    return json(res, 403, { ok: false, error: "远程 Agent 已锁定：仅管理员会话可调用。" });
   }
 
   let body;
@@ -120,6 +136,104 @@ async function agent(req, res) {
       detail: error.message,
       raw: error.raw ? String(error.raw).slice(0, 3000) : undefined
     });
+  }
+}
+
+async function adminLogin(req, res) {
+  if (!AGENT_CONFIGURED || !ADMIN_AGENT_KEY) {
+    return json(res, 503, { ok: false, error: "管理员解锁尚未配置。" });
+  }
+  if (!isSameOrigin(req)) {
+    return json(res, 403, { ok: false, error: "仅允许从本站发起管理员解锁。" });
+  }
+  const ip = clientIp(req);
+  if (!allowAdminAttempt(ip)) {
+    return json(res, 429, { ok: false, error: "尝试次数过多，请十分钟后再试。" });
+  }
+
+  let body;
+  try {
+    body = await readJsonBody(req);
+  } catch (error) {
+    return json(res, 400, { ok: false, error: error.message });
+  }
+  if (!safeEqual(String(body.key || ""), ADMIN_AGENT_KEY)) {
+    return json(res, 401, { ok: false, error: "管理员口令错误。" });
+  }
+
+  adminLoginAttempts.delete(ip);
+  const token = randomBytes(32).toString("base64url");
+  adminSessions.set(token, Date.now() + ADMIN_SESSION_TTL_MS);
+  res.setHeader("Set-Cookie", adminCookie(req, token, Math.floor(ADMIN_SESSION_TTL_MS / 1000)));
+  return json(res, 200, { ok: true, expiresIn: Math.floor(ADMIN_SESSION_TTL_MS / 1000) });
+}
+
+function adminLogout(req, res) {
+  const token = parseCookies(req.headers.cookie || "")[ADMIN_COOKIE];
+  if (token) adminSessions.delete(token);
+  res.setHeader("Set-Cookie", adminCookie(req, "", 0));
+  return json(res, 200, { ok: true });
+}
+
+function hasAdminSession(req) {
+  const token = parseCookies(req.headers.cookie || "")[ADMIN_COOKIE];
+  if (!token) return false;
+  const expiresAt = adminSessions.get(token);
+  if (!expiresAt) return false;
+  if (expiresAt <= Date.now()) {
+    adminSessions.delete(token);
+    return false;
+  }
+  return true;
+}
+
+function parseCookies(header) {
+  const cookies = {};
+  for (const part of String(header).split(";")) {
+    const index = part.indexOf("=");
+    if (index < 1) continue;
+    cookies[part.slice(0, index).trim()] = part.slice(index + 1).trim();
+  }
+  return cookies;
+}
+
+function safeEqual(value, expected) {
+  const left = createHash("sha256").update(value).digest();
+  const right = createHash("sha256").update(expected).digest();
+  return timingSafeEqual(left, right);
+}
+
+function clientIp(req) {
+  const forwarded = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim();
+  return forwarded || req.socket.remoteAddress || "unknown";
+}
+
+function allowAdminAttempt(ip) {
+  const now = Date.now();
+  const windowMs = 10 * 60 * 1000;
+  const record = adminLoginAttempts.get(ip);
+  if (!record || record.resetAt <= now) {
+    adminLoginAttempts.set(ip, { count: 1, resetAt: now + windowMs });
+    return true;
+  }
+  if (record.count >= 5) return false;
+  record.count += 1;
+  return true;
+}
+
+function adminCookie(req, value, maxAge) {
+  const forwardedProto = String(req.headers["x-forwarded-proto"] || "").split(",")[0].trim();
+  const secure = forwardedProto === "https" || Boolean(req.socket.encrypted);
+  return `${ADMIN_COOKIE}=${value}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAge}${secure ? "; Secure" : ""}`;
+}
+
+function isSameOrigin(req) {
+  const origin = req.headers.origin;
+  if (!origin) return true;
+  try {
+    return new URL(origin).host === req.headers.host;
+  } catch {
+    return false;
   }
 }
 
@@ -364,5 +478,5 @@ function sleep(ms) {
 
 server.listen(PORT, () => {
   console.log(`Meeting Action Agent web: http://localhost:${PORT}`);
-  console.log(`Agent mode: ${AGENT_READY ? "Coze API" : "local demo"}`);
+  console.log(`Agent mode: ${PUBLIC_AGENT_ENABLED ? "Coze API" : ADMIN_AGENT_KEY ? "admin unlock" : "local demo"}`);
 });

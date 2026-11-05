@@ -448,6 +448,12 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .engine-option span { display: block; margin-top: 3px; color: #84968e; font-size: 8.8px; line-height: 1.55; }
 .settings-status { display: flex; align-items: flex-start; gap: 8px; margin: 14px 0 0; padding: 10px 11px; border: 1px solid #e0ebe6; border-radius: 8px; color: #6c8279; background: #f9fcfb; font-size: 9px; line-height: 1.55; }
 .settings-status strong { color: #436257; }
+.admin-unlock { margin: 14px 0 0; padding: 12px; border: 1px dashed #cfe3da; border-radius: 10px; background: #f8fcfa; }
+.admin-unlock-head strong { display: block; color: #35564a; font-size: 10px; }
+.admin-unlock-head span { display: block; margin-top: 3px; color: #7e9189; font-size: 8.8px; line-height: 1.55; }
+.admin-unlock-row { display: flex; gap: 8px; margin-top: 10px; }
+.admin-unlock-row .input { flex: 1; min-width: 0; }
+.admin-session { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 12px 0 0; padding: 10px 11px; border: 1px solid #cde6dd; border-radius: 9px; color: #527269; background: #f4fbf7; font-size: 9px; }
 .code-hint { padding: 8px 9px; margin-top: 8px; border-radius: 7px; color: #526b61; background: #f1f6f4; font-family: "Cascadia Mono", Consolas, monospace; font-size: 8.5px; line-height: 1.6; }
 .toast-root { position: fixed; right: 24px; bottom: 77px; z-index: 100; display: flex; flex-direction: column; align-items: flex-end; gap: 7px; pointer-events: none; }
 .toast { display: flex; align-items: center; gap: 7px; max-width: 340px; padding: 10px 13px; border: 1px solid #d8e8e2; border-radius: 9px; color: #3e5c51; background: #fff; box-shadow: 0 12px 32px rgba(17,55,44,.13); font-size: 9.5px; animation: toastIn .2s ease; }

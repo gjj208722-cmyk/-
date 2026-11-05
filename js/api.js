@@ -33,3 +33,15 @@ export async function runRemoteAgent(payload) {
     body: JSON.stringify(payload)
   }, 180000);
 }
+
+export async function loginAdminAgent(key) {
+  return request("/api/admin/login", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ key })
+  }, 15000);
+}
+
+export async function logoutAdminAgent() {
+  return request("/api/admin/logout", { method: "POST" }, 15000);
+}
