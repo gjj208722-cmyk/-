@@ -10,7 +10,9 @@ const PORT = Number(process.env.PORT || 4173);
 const COZE_API_BASE = (process.env.COZE_API_BASE || "https://api.coze.cn").replace(/\/$/, "");
 const COZE_API_TOKEN = process.env.COZE_API_TOKEN || "";
 const COZE_BOT_ID = process.env.COZE_BOT_ID || "";
-const AGENT_READY = Boolean(COZE_API_TOKEN && COZE_BOT_ID);
+const AGENT_CONFIGURED = Boolean(COZE_API_TOKEN && COZE_BOT_ID);
+const PUBLIC_AGENT_ENABLED = process.env.PUBLIC_AGENT_ENABLED === "true";
+const AGENT_READY = PUBLIC_AGENT_ENABLED && AGENT_CONFIGURED;
 
 function loadDotEnv(file) {
   try {
@@ -66,7 +68,9 @@ function health(res) {
     provider: AGENT_READY ? "coze" : "local",
     reason: AGENT_READY
       ? "Coze Agent API 已配置，服务端代理可用。"
-      : "未配置 COZE_API_TOKEN / COZE_BOT_ID，当前使用本地演示引擎。"
+      : !AGENT_CONFIGURED
+        ? "未配置 COZE_API_TOKEN / COZE_BOT_ID，当前使用本地演示引擎。"
+        : "公网远程 Agent 已关闭，当前使用本地演示引擎。"
   });
 }
 
@@ -74,7 +78,9 @@ async function agent(req, res) {
   if (!AGENT_READY) {
     return json(res, 503, {
       ok: false,
-      error: "Agent 未配置：请设置 COZE_API_TOKEN 和 COZE_BOT_ID 后重启服务。"
+      error: !AGENT_CONFIGURED
+        ? "Agent 未配置：请设置 COZE_API_TOKEN 和 COZE_BOT_ID 后重启服务。"
+        : "远程 Agent 未启用：公网演示默认关闭付费接口。"
     });
   }
 

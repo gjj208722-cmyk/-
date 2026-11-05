@@ -6,7 +6,7 @@
 
 https://meeting-action-agent-production.up.railway.app/
 
-公网 Demo 默认使用可复现的本地引擎，Coze Agent 入口保留在“Agent 设置”中；远程额度不可用时会自动回落本地引擎，不阻断演示。
+公网 Demo 默认使用可复现的本地引擎，并在服务端关闭远程 Agent 调用。任何访客都不能通过页面或 `/api/agent` 消耗 Coze 额度。
 
 ## 直接运行
 
@@ -56,11 +56,13 @@ node server.mjs
 ```env
 COZE_API_TOKEN=pat_xxx
 COZE_BOT_ID=7695371178416160822
+PUBLIC_AGENT_ENABLED=true
 COZE_API_BASE=https://api.coze.cn
 ```
 
 > 国内版 Coze 使用 `https://api.coze.cn`；国际版使用 `https://api.coze.com`。
 > 当前项目调用的是 Coze Chat API，不使用 Coze Web Chat SDK。项目需要的是 `pat_` 个人访问令牌，不是 `cli_` 开头的 OAuth 客户端 ID 与 Secret。
+> `PUBLIC_AGENT_ENABLED` 只有显式设为 `true` 才会开放 `/api/agent`。公网部署必须保持 `false`，否则任何访客都可能消耗你的 Coze 额度。
 
 5. 重启服务：
 
