@@ -69,7 +69,8 @@ export function isOverdue(due, today = new Date()) {
 
 export function isThisWeek(due, today = new Date()) {
   if (!due) return false;
-  return due >= startOfWeek(today) && due <= endOfWeek(today);
+  const day = toDate(due);
+  return day >= startOfWeek(today) && day <= endOfWeek(today);
 }
 
 export function resolveChineseDate(text, anchorValue = new Date()) {

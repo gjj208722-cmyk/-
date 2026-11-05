@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { answerQuery, buildMarkdown, buildMeetingResult, extractTasks, formatDate, resolveChineseDate } from "../js/engine.js";
+import { answerQuery, buildMarkdown, buildMeetingResult, extractTasks, formatDate, isThisWeek, resolveChineseDate } from "../js/engine.js";
 
 const anchor = "2026-10-14";
 
@@ -76,6 +76,24 @@ test("对话查询能唯一命中并给出关单确认", () => {
   const result = answerQuery("关闭 问卷数据", meetings, new Date("2026-10-14T12:00:00"));
   assert.equal(result.confirmTaskId, "task-query");
   assert.match(result.html, /准备把/);
+});
+
+test("本周查询按自然周筛选，不受日期字符串比较影响", () => {
+  const today = new Date("2026-10-14T12:00:00");
+  assert.equal(isThisWeek("2026-10-16", today), true);
+  assert.equal(isThisWeek("2026-10-21", today), false);
+  const meetings = [{
+    id: "m-week",
+    title: "周查询测试",
+    date: "2026-10-14",
+    tasks: [
+      { id: "this-week", title: "本周交付", owner: "李娜", due: "2026-10-16", status: "todo" },
+      { id: "next-week", title: "下周交付", owner: "王强", due: "2026-10-21", status: "todo" }
+    ]
+  }];
+  const result = answerQuery("本周有哪些任务", meetings, today);
+  assert.match(result.html, /本周交付/);
+  assert.doesNotMatch(result.html, /下周交付/);
 });
 
 test("日期格式化与会议日期切换", () => {
