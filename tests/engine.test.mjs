@@ -78,6 +78,25 @@ test("对话查询能唯一命中并给出关单确认", () => {
   assert.match(result.html, /准备把/);
 });
 
+test("自然语言完成表达也能识别为关单意图", () => {
+  const meetings = [{
+    id: "m-natural-query",
+    title: "测试会议",
+    date: anchor,
+    tasks: [{
+      id: "task-natural",
+      title: "提交问卷数据",
+      owner: "李娜",
+      due: "2026-10-16",
+      status: "todo"
+    }]
+  }];
+  for (const query of ["问卷数据已提交", "李娜的问卷数据已经提交", "问卷数据提交了", "把问卷数据标记为已完成"]) {
+    const result = answerQuery(query, meetings, new Date("2026-10-14T12:00:00"));
+    assert.equal(result.confirmTaskId, "task-natural", query);
+  }
+});
+
 test("本周查询按自然周筛选，不受日期字符串比较影响", () => {
   const today = new Date("2026-10-14T12:00:00");
   assert.equal(isThisWeek("2026-10-16", today), true);

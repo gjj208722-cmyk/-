@@ -67,6 +67,7 @@ function loadState() {
         if (task.due && !/^\d{4}-\d{2}-\d{2}$/.test(task.due)) task.due = formatDate(task.due);
       }
     }
+    parsed.meetings = dedupeMeetings(parsed.meetings);
     parsed.draft ||= defaultDraft(new Date());
     parsed.ui ||= {};
     parsed.settings ||= { engine: "local", remoteAvailable: false };
@@ -109,6 +110,22 @@ function draftKey(draft) {
 
 function isDraftProcessed(draft) {
   return Boolean(state?.ui?.lastProcessed?.key && state.ui.lastProcessed.key === draftKey(draft));
+}
+
+function meetingContentKey(meeting) {
+  const transcript = String(meeting?.transcript || "").replace(/\s+/g, " ").trim();
+  return `${meeting?.date || ""}\u001f${transcript}`;
+}
+
+function dedupeMeetings(meetings) {
+  const seen = new Set();
+  return (meetings || []).filter((meeting) => {
+    const key = meetingContentKey(meeting);
+    if (!String(meeting?.transcript || "").trim()) return true;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function allTasks() {
@@ -811,14 +828,28 @@ async function processDraft() {
     render();
     await delay(360);
 
-    state.meetings.unshift(meeting);
+    const duplicateIndex = state.meetings.findIndex((item) => meetingContentKey(item) === meetingContentKey(meeting));
+    const isUpdate = duplicateIndex >= 0;
+    if (isUpdate) {
+      const existing = state.meetings[duplicateIndex];
+      meeting.id = existing.id;
+      meeting.tasks = meeting.tasks.map((task) => ({ ...task, meetingId: existing.id }));
+      state.meetings.splice(duplicateIndex, 1, meeting);
+    } else {
+      state.meetings.unshift(meeting);
+    }
     state.selectedMeetingId = meeting.id;
     state.ui.showResult = true;
     state.resultTab = "tasks";
     state.draft = { ...draft };
     state.ui.lastProcessed = { meetingId: meeting.id, key: draftKey(state.draft) };
     state.view = "workbench";
-    showToast(meeting.tasks.length ? `已整理 ${meeting.tasks.length} 条待办并写入台账。` : "纪要已生成，但原文没有识别到明确待办。", meeting.tasks.length ? "success" : "warning");
+    const toast = meeting.tasks.length
+      ? isUpdate
+        ? `已更新原会议记录，${meeting.tasks.length} 条待办已同步，没有重复新增。`
+        : `已整理 ${meeting.tasks.length} 条待办并写入台账。`
+      : "纪要已生成，但原文没有识别到明确待办。";
+    showToast(toast, meeting.tasks.length ? "success" : "warning");
   } finally {
     ui.processing = false;
     ui.stepIndex = -1;

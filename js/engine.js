@@ -410,10 +410,31 @@ export function taskStats(meetings, today = new Date()) {
   };
 }
 
+function isCloseIntent(text) {
+  const source = String(text || "").trim();
+  if (/^(?:请|帮我|麻烦)?\s*(?:把|将)?\s*(?:关闭|关掉|标记为已完成|标记完成|完成)/.test(source)) return true;
+  if (/(?:已经|已)\s*(?:提交|交|完成|做完|搞定|弄完|结束|处理完)/.test(source)) return true;
+  return /(?:提交|交|完成|做完|搞定|弄完|结束|处理完)(?:了|完)\s*[。.!！]?$/.test(source);
+}
+
+function extractCloseKeyword(text) {
+  return String(text || "")
+    .trim()
+    .replace(/^(?:请|帮我|麻烦)?\s*/, "")
+    .replace(/^(?:把|将)\s*/, "")
+    .replace(/^(?:关闭|关掉|标记为已完成|标记完成|完成)\s*/, "")
+    .replace(/(?:标记为|设为|改成)?\s*(?:已完成|完成|关掉|关闭)\s*[。.!！]?$/, "")
+    .replace(/(?:已经|已)\s*(?:提交|交|完成|做完|搞定|弄完|结束|处理完)(?:了|完)?\s*[。.!！]?$/, "")
+    .replace(/(?:提交|交|完成|做完|搞定|弄完|结束|处理完)(?:了|完)\s*[。.!！]?$/, "")
+    .replace(/[“”"'《》\s]/g, "")
+    .trim();
+}
+
 export function answerQuery(query, meetings, today = new Date()) {
   const text = String(query || "").trim();
   const tasks = flattenTasks(meetings);
   const open = tasks.filter((task) => task.status !== "done");
+  const owners = [...new Set(tasks.map((task) => task.owner).filter((owner) => owner && owner !== "待定"))];
   if (!text) return { html: "可以问我：谁有哪些任务、本周到期什么、谁还没负责人，或直接说“关闭 问卷数据”。" };
 
   if (/(帮助|能做什么|怎么用)/.test(text)) {
@@ -422,19 +443,18 @@ export function answerQuery(query, meetings, today = new Date()) {
     };
   }
 
-  if (/(关闭|关掉|完成|标记为已完成|标记完成)/.test(text)) {
-    let keyword = text
-      .replace(/^(?:请|帮我|麻烦)?\s*/, "")
-      .replace(/^(?:把|将)\s*/, "")
-      .replace(/^(?:关闭|关掉|完成|标记为已完成|标记完成)\s*/, "")
-      .replace(/(?:标记为|设为|改成)?\s*(?:已完成|完成|关掉|关闭)$/g, "")
-      .replace(/[“”"'《》\s]/g, "")
-      .trim();
+  if (isCloseIntent(text)) {
+    const keyword = extractCloseKeyword(text);
     if (/^(?:所有|全部|这些|那些)$/.test(keyword)) {
       return { html: "批量关单属于高风险操作。当前版本只允许一次关闭一条，请说出具体任务名。" };
     }
     if (!keyword) return { html: "请告诉我要关闭哪条待办，例如“关闭 问卷数据”。" };
-    const matches = open.filter((task) => task.title.includes(keyword) || task.owner.includes(keyword) || (task.meetingTitle || "").includes(keyword));
+    const variants = [keyword];
+    for (const owner of owners) {
+      const stripped = keyword.replace(new RegExp(`^${owner}(?:的)?`), "");
+      if (stripped && stripped !== keyword) variants.push(stripped);
+    }
+    const matches = open.filter((task) => variants.some((variant) => task.title.includes(variant) || task.owner.includes(variant) || (task.meetingTitle || "").includes(variant)));
     if (matches.length === 0) return { html: `没有找到与“${escapeHtml(keyword)}”匹配的未完成待办。` };
     if (matches.length > 1) {
       return { html: `“${escapeHtml(keyword)}”匹配到 ${matches.length} 条，请说得更具体：<ul>${matches.slice(0, 5).map((task) => `<li>${escapeHtml(task.title)} · ${escapeHtml(task.owner)} · ${escapeHtml(task.due || "待定")}</li>`).join("")}</ul>` };
@@ -466,7 +486,6 @@ export function answerQuery(query, meetings, today = new Date()) {
     return { html: `当前共 <strong>${stats.total}</strong> 条任务：未完成 ${stats.open} 条，已完成 ${stats.done} 条，逾期 ${stats.overdue} 条，本周到期 ${stats.thisWeek} 条，字段待补 ${stats.pending} 条。` };
   }
 
-  const owners = [...new Set(tasks.map((task) => task.owner).filter((owner) => owner && owner !== "待定"))];
   const owner = owners.find((name) => text.includes(name));
   if (owner) {
     const list = open.filter((task) => task.owner === owner);
