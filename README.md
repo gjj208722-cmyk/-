@@ -2,6 +2,12 @@
 
 把会议转写整理成结构化待办，并继续管理负责人、截止时间、状态、查询与关单回执。
 
+## 在线演示
+
+https://meeting-action-agent-production.up.railway.app/
+
+公网 Demo 默认使用可复现的本地引擎，Coze Agent 入口保留在“Agent 设置”中；远程额度不可用时会自动回落本地引擎，不阻断演示。
+
 ## 直接运行
 
 ```powershell
