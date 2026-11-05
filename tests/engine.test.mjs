@@ -113,6 +113,21 @@ test("本周查询按自然周筛选，不受日期字符串比较影响", () =>
   const result = answerQuery("本周有哪些任务", meetings, today);
   assert.match(result.html, /本周交付/);
   assert.doesNotMatch(result.html, /下周交付/);
+  assert.match(answerQuery("本周有哪些事情", meetings, today).html, /本周交付/);
+  assert.match(answerQuery("这周要做什么", meetings, today).html, /本周交付/);
+  assert.match(answerQuery("本周李娜有什么任务", meetings, today).html, /本周交付/);
+});
+
+test("负责人没有未完成任务时也返回结构化回复", () => {
+  const meetings = [{
+    id: "m-empty",
+    title: "空任务",
+    date: anchor,
+    tasks: [{ id: "done-task", title: "已完成任务", owner: "王强", due: "2026-10-13", status: "done" }]
+  }];
+  const result = answerQuery("王强有什么任务", meetings, new Date("2026-10-14T12:00:00"));
+  assert.equal(typeof result.html, "string");
+  assert.match(result.html, /王强当前没有未完成任务/);
 });
 
 test("日期格式化与会议日期切换", () => {

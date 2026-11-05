@@ -435,6 +435,7 @@ export function answerQuery(query, meetings, today = new Date()) {
   const tasks = flattenTasks(meetings);
   const open = tasks.filter((task) => task.status !== "done");
   const owners = [...new Set(tasks.map((task) => task.owner).filter((owner) => owner && owner !== "待定"))];
+  const weekScope = /(本周|这周|本星期|这星期)/.test(text);
   if (!text) return { html: "可以问我：谁有哪些任务、本周到期什么、谁还没负责人，或直接说“关闭 问卷数据”。" };
 
   if (/(帮助|能做什么|怎么用)/.test(text)) {
@@ -466,11 +467,6 @@ export function answerQuery(query, meetings, today = new Date()) {
     };
   }
 
-  if (/(本周|这周)/.test(text) && /(到期|任务|截止)/.test(text)) {
-    const list = open.filter((task) => isThisWeek(task.due, today));
-    return { html: list.length ? `本周还有 <strong>${list.length}</strong> 条待办：<ul>${list.map((task) => `<li>${escapeHtml(task.title)} · ${escapeHtml(task.owner)} · ${formatMonthDay(task.due)}</li>`).join("")}</ul>` : "本周没有到期未完成的待办。" };
-  }
-
   if (/(逾期|过期|超期)/.test(text)) {
     const list = open.filter((task) => isOverdue(task.due, today));
     return { html: list.length ? `当前有 <strong>${list.length}</strong> 条逾期：<ul>${list.map((task) => `<li>${escapeHtml(task.title)} · ${escapeHtml(task.owner)} · 原定 ${escapeHtml(task.due)}</li>`).join("")}</ul>` : "当前没有逾期未完成的任务。" };
@@ -488,11 +484,16 @@ export function answerQuery(query, meetings, today = new Date()) {
 
   const owner = owners.find((name) => text.includes(name));
   if (owner) {
-    const list = open.filter((task) => task.owner === owner);
+    const list = open.filter((task) => task.owner === owner && (!weekScope || isThisWeek(task.due, today)));
     if (list.length) {
-      return { html: `${escapeHtml(owner)}当前有 <strong>${list.length}</strong> 条未完成：<ul>${list.map((task) => `<li>${escapeHtml(task.title)} · ${task.due ? formatMonthDay(task.due) : "截止待定"} · ${statusLabel(task.status)}</li>`).join("")}</ul>` };
+      return { html: `${escapeHtml(owner)}${weekScope ? "本周" : "当前"}有 <strong>${list.length}</strong> 条未完成：<ul>${list.map((task) => `<li>${escapeHtml(task.title)} · ${task.due ? formatMonthDay(task.due) : "截止待定"} · ${statusLabel(task.status)}</li>`).join("")}</ul>` };
     }
-    return `${escapeHtml(owner)}当前没有未完成任务。`;
+    return { html: `${escapeHtml(owner)}${weekScope ? "本周" : "当前"}没有未完成任务。` };
+  }
+
+  if (weekScope) {
+    const list = open.filter((task) => isThisWeek(task.due, today));
+    return { html: list.length ? `本周还有 <strong>${list.length}</strong> 条待办：<ul>${list.map((task) => `<li>${escapeHtml(task.title)} · ${escapeHtml(task.owner)} · ${formatMonthDay(task.due)}</li>`).join("")}</ul>` : "本周没有到期未完成的待办。" };
   }
 
   const direct = open.filter((task) => task.title.includes(text) || text.includes(task.title));
