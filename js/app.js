@@ -1083,7 +1083,7 @@ function selectEngine(engine) {
 async function refreshHealth(showFeedback = true) {
   ui.health = await checkAgentHealth();
   if (!ui.health.agent && state.settings.engine === "coze") state.settings.engine = "local";
-  if (ui.health.agent && !state.settings.engineExplicit) state.settings.engine = "coze";
+  if (!state.settings.engineExplicit) state.settings.engine = "local";
   state.settings.remoteAvailable = Boolean(ui.health.agent);
   saveState();
   updateEngineChrome();
