@@ -73,6 +73,7 @@ COZE_API_BASE=https://api.coze.cn
 > `AGENT_DAILY_LIMIT` 控制全站每日公开调用总量，`AGENT_RATE_LIMIT_PER_IP` / `AGENT_RATE_LIMIT_WINDOW_MINUTES` 控制单 IP 频率。管理员会话不受公开额度限制。
 > 设置 `ADMIN_AGENT_KEY` 后，打开 `/?admin=1`，进入“Agent 接入设置”并输入口令，可仅为当前浏览器开启 2 小时的管理员会话。普通访客即使手动打开该地址，没有口令也无法解锁，直接调用 `/api/agent` 同样会被拒绝。
 > 管理员登录后，设置面板会出现“公开调用开关”，可按 15 / 30 / 60 分钟临时对所有访客开放，也可随时立即关闭。该状态保存在服务进程内，重启会自动关闭；公开调用仍受每日额度和单 IP 频率限制。可通过 `AGENT_MANUAL_OPEN_MINUTES` 修改默认开放时长。
+> 仓库内置了一个仅用于演示部署的不可逆口令哈希；线上未配置 `ADMIN_AGENT_KEY` 时，登录口令沿用本地 `.env` 中的同名字段。设置 Railway 变量后会优先使用变量值。建议正式使用时在 Railway 重新生成独立口令。
 
 5. 重启服务：
 

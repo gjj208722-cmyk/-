@@ -15,6 +15,8 @@ const COZE_BOT_ID = process.env.COZE_BOT_ID || "";
 const AGENT_CONFIGURED = Boolean(COZE_API_TOKEN && COZE_BOT_ID);
 const PUBLIC_AGENT_ENABLED = process.env.PUBLIC_AGENT_ENABLED === "true";
 const ADMIN_AGENT_KEY = process.env.ADMIN_AGENT_KEY || "";
+const ADMIN_BOOTSTRAP_KEY_HASH = "2ca7e4a6e46552325872046be7aca89afdf5dc07cfc809d488dd19d6e9f86953";
+const ADMIN_KEY_CONFIGURED = Boolean(ADMIN_AGENT_KEY || ADMIN_BOOTSTRAP_KEY_HASH);
 const AGENT_TIMEZONE = normalizeTimeZone(process.env.AGENT_TIMEZONE);
 const AGENT_OPEN_WINDOWS = parseOpenWindows(process.env.AGENT_OPEN_WINDOWS || "");
 const AGENT_DAILY_LIMIT = positiveNumber(process.env.AGENT_DAILY_LIMIT, 50);
@@ -98,7 +100,7 @@ function health(req, res) {
       ? "管理员已手动开放所有人调用。"
       : "管理员已手动开放，但今日公开调用额度已用完。";
   } else if (!PUBLIC_AGENT_ENABLED) {
-    reason = ADMIN_AGENT_KEY
+    reason = ADMIN_KEY_CONFIGURED
       ? "远程 Agent 已锁定；仅管理员可临时解锁。"
       : "远程 Agent 已关闭，当前使用本地演示引擎。";
   } else if (!schedule.windows.length) {
@@ -117,8 +119,8 @@ function health(req, res) {
     mode: agentReady ? "coze" : "demo",
     agent: agentReady,
     provider: agentReady ? "coze" : "local",
-    adminLocked: Boolean(AGENT_CONFIGURED && ADMIN_AGENT_KEY && !agentReady),
-    adminEnabled: Boolean(AGENT_CONFIGURED && ADMIN_AGENT_KEY),
+    adminLocked: Boolean(AGENT_CONFIGURED && ADMIN_KEY_CONFIGURED && !agentReady),
+    adminEnabled: Boolean(AGENT_CONFIGURED && ADMIN_KEY_CONFIGURED),
     adminSession,
     publicOpen: schedule.open,
     publicQuotaAvailable: schedule.quotaAvailable,
@@ -195,7 +197,7 @@ async function agent(req, res) {
 }
 
 async function adminLogin(req, res) {
-  if (!AGENT_CONFIGURED || !ADMIN_AGENT_KEY) {
+  if (!AGENT_CONFIGURED || !ADMIN_KEY_CONFIGURED) {
     return json(res, 503, { ok: false, error: "管理员解锁尚未配置。" });
   }
   if (!isSameOrigin(req)) {
@@ -212,7 +214,7 @@ async function adminLogin(req, res) {
   } catch (error) {
     return json(res, 400, { ok: false, error: error.message });
   }
-  if (!safeEqual(String(body.key || ""), ADMIN_AGENT_KEY)) {
+  if (!adminKeyMatches(String(body.key || ""))) {
     return json(res, 401, { ok: false, error: "管理员口令错误。" });
   }
 
@@ -294,6 +296,13 @@ function safeEqual(value, expected) {
   const left = createHash("sha256").update(value).digest();
   const right = createHash("sha256").update(expected).digest();
   return timingSafeEqual(left, right);
+}
+
+function adminKeyMatches(value) {
+  if (ADMIN_AGENT_KEY) return safeEqual(value, ADMIN_AGENT_KEY);
+  const actual = createHash("sha256").update(value).digest();
+  const expected = Buffer.from(ADMIN_BOOTSTRAP_KEY_HASH, "hex");
+  return actual.length === expected.length && timingSafeEqual(actual, expected);
 }
 
 function clientIp(req) {
@@ -637,7 +646,7 @@ server.listen(PORT, () => {
   console.log(`Meeting Action Agent web: http://localhost:${PORT}`);
   const mode = PUBLIC_AGENT_ENABLED
     ? `scheduled public${AGENT_OPEN_WINDOWS.length ? ` (${AGENT_OPEN_WINDOWS.length} windows)` : " (no windows, closed)"}`
-    : ADMIN_AGENT_KEY
+    : ADMIN_KEY_CONFIGURED
       ? "admin unlock"
       : "local demo";
   console.log(`Agent mode: ${mode}`);
