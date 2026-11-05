@@ -4,6 +4,7 @@ import { readFile, stat } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { getScheduleState, normalizeTimeZone, parseOpenWindows, zonedDayKey } from "./lib/schedule.mjs";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 loadDotEnv(path.join(ROOT, ".env"));
@@ -14,10 +15,17 @@ const COZE_BOT_ID = process.env.COZE_BOT_ID || "";
 const AGENT_CONFIGURED = Boolean(COZE_API_TOKEN && COZE_BOT_ID);
 const PUBLIC_AGENT_ENABLED = process.env.PUBLIC_AGENT_ENABLED === "true";
 const ADMIN_AGENT_KEY = process.env.ADMIN_AGENT_KEY || "";
+const AGENT_TIMEZONE = normalizeTimeZone(process.env.AGENT_TIMEZONE);
+const AGENT_OPEN_WINDOWS = parseOpenWindows(process.env.AGENT_OPEN_WINDOWS || "");
+const AGENT_DAILY_LIMIT = positiveNumber(process.env.AGENT_DAILY_LIMIT, 50);
+const AGENT_RATE_LIMIT_PER_IP = positiveNumber(process.env.AGENT_RATE_LIMIT_PER_IP, 3);
+const AGENT_RATE_WINDOW_MS = positiveNumber(process.env.AGENT_RATE_LIMIT_WINDOW_MINUTES, 10) * 60 * 1000;
 const ADMIN_SESSION_TTL_MS = 2 * 60 * 60 * 1000;
 const ADMIN_COOKIE = "maa_admin";
 const adminSessions = new Map();
 const adminLoginAttempts = new Map();
+const publicAgentUsage = new Map();
+let publicAgentDaily = { day: "", count: 0 };
 
 function loadDotEnv(file) {
   try {
@@ -35,6 +43,11 @@ function loadDotEnv(file) {
   } catch {
     // .env is optional.
   }
+}
+
+function positiveNumber(value, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : fallback;
 }
 
 const MIME = {
@@ -69,7 +82,29 @@ const server = http.createServer(async (req, res) => {
 
 function health(req, res) {
   const adminSession = hasAdminSession(req);
-  const agentReady = AGENT_CONFIGURED && (PUBLIC_AGENT_ENABLED || adminSession);
+  const schedule = publicSchedule();
+  const publicReady = schedule.open && schedule.quotaAvailable;
+  const agentReady = AGENT_CONFIGURED && (adminSession || publicReady);
+  let reason;
+  if (!AGENT_CONFIGURED) {
+    reason = "未配置 COZE_API_TOKEN / COZE_BOT_ID，当前使用本地演示引擎。";
+  } else if (adminSession) {
+    reason = "管理员会话已连接，当前浏览器可临时调用 Coze Agent。";
+  } else if (!PUBLIC_AGENT_ENABLED) {
+    reason = ADMIN_AGENT_KEY
+      ? "远程 Agent 已锁定；仅管理员可临时解锁。"
+      : "远程 Agent 已关闭，当前使用本地演示引擎。";
+  } else if (!schedule.windows.length) {
+    reason = "已启用定时开放，但尚未配置开放时段，当前使用本地演示引擎。";
+  } else if (!schedule.open) {
+    reason = schedule.nextOpenAt
+      ? `Agent 当前未开放；下次开放：${schedule.nextOpenAt}。`
+      : "Agent 当前未开放，且没有后续开放时段。";
+  } else if (!schedule.quotaAvailable) {
+    reason = "今日公开调用额度已用完，当前使用本地演示引擎。";
+  } else {
+    reason = "Agent 正在定时开放，访客可直接调用。";
+  }
   return json(res, 200, {
     ok: true,
     mode: agentReady ? "coze" : "demo",
@@ -77,15 +112,10 @@ function health(req, res) {
     provider: agentReady ? "coze" : "local",
     adminLocked: Boolean(AGENT_CONFIGURED && ADMIN_AGENT_KEY && !agentReady),
     adminSession,
-    reason: agentReady
-      ? adminSession
-        ? "管理员会话已连接，当前浏览器可临时调用 Coze Agent。"
-        : "Coze Agent API 已配置，服务端代理可用。"
-      : !AGENT_CONFIGURED
-        ? "未配置 COZE_API_TOKEN / COZE_BOT_ID，当前使用本地演示引擎。"
-        : ADMIN_AGENT_KEY
-          ? "远程 Agent 已锁定；仅管理员可临时解锁。"
-          : "远程 Agent 已关闭，当前使用本地演示引擎。"
+    publicOpen: schedule.open,
+    publicQuotaAvailable: schedule.quotaAvailable,
+    schedule,
+    reason
   });
 }
 
@@ -96,8 +126,16 @@ async function agent(req, res) {
       error: "Agent 未配置：请设置 COZE_API_TOKEN 和 COZE_BOT_ID 后重启服务。"
     });
   }
-  if (!PUBLIC_AGENT_ENABLED && !hasAdminSession(req)) {
-    return json(res, 403, { ok: false, error: "远程 Agent 已锁定：仅管理员会话可调用。" });
+  const adminSession = hasAdminSession(req);
+  const schedule = publicSchedule();
+  if (!adminSession && (!PUBLIC_AGENT_ENABLED || !schedule.open)) {
+    return json(res, 403, {
+      ok: false,
+      error: schedule.nextOpenAt
+        ? `Agent 当前未开放；下次开放：${schedule.nextOpenAt}。`
+        : "远程 Agent 已锁定：当前不在开放时段。",
+      schedule
+    });
   }
 
   let body;
@@ -111,6 +149,13 @@ async function agent(req, res) {
   const meetingDate = String(body.meetingDate || "").trim();
   if (!transcript) return json(res, 400, { ok: false, error: "transcript 不能为空" });
   if (transcript.length > 60000) return json(res, 413, { ok: false, error: "单次转写过长，请按 90 分钟以内切分后重试。" });
+
+  if (!adminSession) {
+    const quota = consumePublicAgentQuota(clientIp(req));
+    if (!quota.ok) {
+      return json(res, quota.status, { ok: false, error: quota.error, schedule: quota.schedule });
+    }
+  }
 
   const prompt = buildPrompt({
     transcript,
@@ -206,6 +251,60 @@ function safeEqual(value, expected) {
 function clientIp(req) {
   const forwarded = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim();
   return forwarded || req.socket.remoteAddress || "unknown";
+}
+
+function publicSchedule(now = new Date()) {
+  const day = zonedDayKey(now, AGENT_TIMEZONE);
+  if (publicAgentDaily.day !== day) publicAgentDaily = { day, count: 0 };
+  return getScheduleState({
+    enabled: PUBLIC_AGENT_ENABLED,
+    windows: AGENT_OPEN_WINDOWS,
+    timeZone: AGENT_TIMEZONE,
+    now,
+    dailyLimit: AGENT_DAILY_LIMIT,
+    dailyCount: publicAgentDaily.count
+  });
+}
+
+function consumePublicAgentQuota(ip) {
+  const schedule = publicSchedule();
+  if (!schedule.open) {
+    return {
+      ok: false,
+      status: 403,
+      error: schedule.nextOpenAt
+        ? `Agent 当前未开放；下次开放：${schedule.nextOpenAt}。`
+        : "Agent 当前不在开放时段。",
+      schedule
+    };
+  }
+  if (!schedule.quotaAvailable) {
+    return {
+      ok: false,
+      status: 429,
+      error: "今日公开调用额度已用完，请稍后再试或联系管理员。",
+      schedule
+    };
+  }
+
+  const now = Date.now();
+  let record = publicAgentUsage.get(ip);
+  if (!record || record.resetAt <= now) {
+    record = { count: 0, resetAt: now + AGENT_RATE_WINDOW_MS };
+  }
+  if (record.count >= AGENT_RATE_LIMIT_PER_IP) {
+    return {
+      ok: false,
+      status: 429,
+      error: `调用过于频繁：每 ${Math.round(AGENT_RATE_WINDOW_MS / 60000)} 分钟最多 ${AGENT_RATE_LIMIT_PER_IP} 次。`,
+      schedule
+    };
+  }
+
+  record.count += 1;
+  publicAgentUsage.set(ip, record);
+  publicAgentDaily.count += 1;
+  return { ok: true, schedule: publicSchedule() };
 }
 
 function allowAdminAttempt(ip) {
@@ -478,5 +577,10 @@ function sleep(ms) {
 
 server.listen(PORT, () => {
   console.log(`Meeting Action Agent web: http://localhost:${PORT}`);
-  console.log(`Agent mode: ${PUBLIC_AGENT_ENABLED ? "Coze API" : ADMIN_AGENT_KEY ? "admin unlock" : "local demo"}`);
+  const mode = PUBLIC_AGENT_ENABLED
+    ? `scheduled public${AGENT_OPEN_WINDOWS.length ? ` (${AGENT_OPEN_WINDOWS.length} windows)` : " (no windows, closed)"}`
+    : ADMIN_AGENT_KEY
+      ? "admin unlock"
+      : "local demo";
+  console.log(`Agent mode: ${mode}`);
 });

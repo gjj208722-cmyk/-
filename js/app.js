@@ -726,10 +726,46 @@ function scrollChatBottom() {
 function renderSettingsModal() {
   const remote = ui.health.agent;
   const adminLocked = Boolean(ui.health.adminLocked);
+  const schedule = ui.health.schedule || {};
+  const publicOpen = Boolean(schedule.open);
+  const publicQuotaAvailable = schedule.quotaAvailable !== false;
+  const adminActive = remote && Boolean(ui.health.adminSession);
   const selected = state.settings.engine === "coze" && remote ? "coze" : "local";
-  const cozeStatus = remote ? "已解锁" : adminLocked ? "管理员锁定" : "未配置";
-  const statusTitle = remote ? "服务端代理已连接" : adminLocked ? "Coze Agent 已锁定" : "当前未检测到 Agent 服务";
-  const setupHint = !remote && !adminLocked ? `<div class="code-hint">COZE_API_TOKEN=...<br>COZE_BOT_ID=...<br>node server.mjs</div>` : "";
+  const cozeStatus = remote
+    ? publicOpen && !adminActive
+      ? "定时开放中"
+      : "已解锁"
+    : adminLocked
+      ? "管理员锁定"
+      : schedule.enabled
+        ? publicOpen
+          ? "额度已用完"
+          : "等待开放"
+        : "未配置";
+  const statusTitle = remote
+    ? adminActive
+      ? "管理员会话已连接"
+      : publicOpen
+        ? "Agent 定时开放中"
+        : "服务端代理已连接"
+    : adminLocked
+      ? "Coze Agent 已锁定"
+      : schedule.enabled
+        ? publicOpen
+          ? "今日公开额度已用完"
+          : "Agent 等待开放"
+        : "当前未检测到 Agent 服务";
+  const scheduleLabel = schedule.enabled
+    ? publicOpen && publicQuotaAvailable
+      ? `定时开放中：${schedule.currentWindow || "当前时段"} · 今日剩余 ${schedule.remainingToday ?? 0} 次`
+      : publicOpen
+        ? "当前时段已开放，但今日公开额度已用完。"
+        : schedule.nextOpenAt
+          ? `当前关闭 · 下次开放 ${schedule.nextOpenAt}`
+          : "当前关闭 · 尚未配置可用开放时段"
+    : "";
+  const scheduleHint = scheduleLabel ? `<div class="schedule-hint">${esc(scheduleLabel)}</div>` : "";
+  const setupHint = !remote && !adminLocked && !schedule.enabled ? `<div class="code-hint">COZE_API_TOKEN=...<br>COZE_BOT_ID=...<br>node server.mjs</div>` : "";
   const adminBlock = ADMIN_PANEL && adminLocked ? `
           <div class="admin-unlock">
             <div class="admin-unlock-head"><strong>管理员临时解锁</strong><span>输入服务端口令；仅当前浏览器 2 小时内可使用，普通访客无法选择或调用 Coze。</span></div>
@@ -756,12 +792,12 @@ function renderSettingsModal() {
           </label>
           <label class="engine-option ${selected === "coze" ? "selected" : ""} ${remote ? "" : "disabled"}" data-action="select-engine" data-engine="coze">
             <input type="radio" name="engine" ${selected === "coze" ? "checked" : ""} ${remote ? "" : "disabled"} />
-            <span><strong>Coze Agent API · ${cozeStatus}</strong><span>前端只请求 <span class="mono">/api/agent</span>；Node 服务验证管理员会话后才会调用 Coze。</span></span>
+            <span><strong>Coze Agent API · ${cozeStatus}</strong><span>前端只请求 <span class="mono">/api/agent</span>；Node 服务验证开放时段或管理员会话后才会调用 Coze。</span></span>
           </label>
           ${adminBlock}
           <div class="settings-status">
             ${icon(remote ? "check" : "link")}
-            <div><strong>${statusTitle}</strong><br>${esc(ui.health.reason || "使用本地演示引擎即可完整运行。")}${setupHint}</div>
+            <div><strong>${statusTitle}</strong><br>${esc(ui.health.reason || "使用本地演示引擎即可完整运行。")}${scheduleHint}${setupHint}</div>
           </div>
         </div>
         <div class="modal-foot">
@@ -1120,7 +1156,7 @@ function closeModal() {
 
 function selectEngine(engine) {
   if (engine === "coze" && !ui.health.agent) {
-    showToast("Coze Agent 尚未配置。先启动 Node 服务并填写环境变量。", "warning");
+    showToast("Coze Agent 当前不可用：可能不在开放时段、额度已用完，或尚未配置。", "warning");
     return;
   }
   state.settings.engine = engine;
@@ -1167,7 +1203,7 @@ async function lockAdminAgent() {
 async function refreshHealth(showFeedback = true) {
   ui.health = await checkAgentHealth();
   if (!ui.health.agent && state.settings.engine === "coze") state.settings.engine = "local";
-  if (!state.settings.engineExplicit) state.settings.engine = "local";
+  if (ui.health.agent && !state.settings.engineExplicit) state.settings.engine = "coze";
   state.settings.remoteAvailable = Boolean(ui.health.agent);
   saveState();
   updateEngineChrome();

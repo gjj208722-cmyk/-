@@ -59,12 +59,18 @@ COZE_API_TOKEN=pat_xxx
 COZE_BOT_ID=7695371178416160822
 PUBLIC_AGENT_ENABLED=false
 ADMIN_AGENT_KEY=replace-with-a-long-random-secret
+AGENT_OPEN_WINDOWS=2026-11-06 09:00-10:00
+AGENT_TIMEZONE=Asia/Shanghai
+AGENT_DAILY_LIMIT=50
+AGENT_RATE_LIMIT_PER_IP=3
+AGENT_RATE_LIMIT_WINDOW_MINUTES=10
 COZE_API_BASE=https://api.coze.cn
 ```
 
 > 国内版 Coze 使用 `https://api.coze.cn`；国际版使用 `https://api.coze.com`。
 > 当前项目调用的是 Coze Chat API，不使用 Coze Web Chat SDK。项目需要的是 `pat_` 个人访问令牌，不是 `cli_` 开头的 OAuth 客户端 ID 与 Secret。
-> `PUBLIC_AGENT_ENABLED` 只有显式设为 `true` 才会对所有访客开放 `/api/agent`。公网部署必须保持 `false`，否则任何访客都可能消耗你的 Coze 额度。
+> 保持 `PUBLIC_AGENT_ENABLED=false` 时，只有管理员可以临时解锁。设为 `true` 后，仅在 `AGENT_OPEN_WINDOWS` 列出的时段内对访客开放；没有配置时段或不在时段内时自动回落本地引擎。多个时段用英文逗号分隔，例如 `2026-11-06 09:00-10:00,2026-11-07 14:00-15:00`。
+> `AGENT_DAILY_LIMIT` 控制全站每日公开调用总量，`AGENT_RATE_LIMIT_PER_IP` / `AGENT_RATE_LIMIT_WINDOW_MINUTES` 控制单 IP 频率。管理员会话不受公开额度限制。
 > 设置 `ADMIN_AGENT_KEY` 后，打开 `/?admin=1`，进入“Agent 接入设置”并输入口令，可仅为当前浏览器开启 2 小时的管理员会话。普通访客即使手动打开该地址，没有口令也无法解锁，直接调用 `/api/agent` 同样会被拒绝。
 
 5. 重启服务：
@@ -73,7 +79,7 @@ COZE_API_BASE=https://api.coze.cn
 node server.mjs
 ```
 
-6. 打开 `http://localhost:4174/api/health`，应看到 `"agent": true` 和 `"mode": "coze"`。页面左下角会显示“Coze Agent 已接入”，默认自动使用 Coze；如果手动切到本地，可在“Agent 设置”中切回。
+6. 在开放时段内打开 `http://localhost:4174/api/health`，应看到 `"agent": true`、`"mode": "coze"` 和 `"schedule": { "open": true }`。页面左下角会显示“Coze Agent 已接入”；如果手动切到本地，可在“Agent 设置”中切回。
 
 ![Coze 接入结果](docs/screenshots/10-coze-result.png)
 
@@ -89,15 +95,15 @@ node server.mjs
 
 ## 部署
 
-项目包含 `Dockerfile` 与 `render.yaml`，可以部署到任意支持 Node 20+ 的容器或 PaaS。部署后在平台环境变量中配置 `COZE_API_TOKEN`、`COZE_BOT_ID`，并保持 `PUBLIC_AGENT_ENABLED=false`；如需管理员临时解锁，再增加一个高强度的 `ADMIN_AGENT_KEY`。不要把 Token 或管理员口令写进浏览器端代码或仓库。
+项目包含 `Dockerfile` 与 `render.yaml`，可以部署到任意支持 Node 20+ 的容器或 PaaS。至少配置 `COZE_API_TOKEN`、`COZE_BOT_ID`；需要临时公开时，再配置 `PUBLIC_AGENT_ENABLED=true`、`AGENT_OPEN_WINDOWS`、`AGENT_TIMEZONE`、`AGENT_DAILY_LIMIT` 和 IP 限流。建议同时保留高强度的 `ADMIN_AGENT_KEY`，用于开放时段之外临时演示。不要把 Token 或管理员口令写进浏览器端代码或仓库。
 
 ## 测试
 
 ```powershell
-node --test tests/engine.test.mjs
+node --test tests/*.test.mjs
 ```
 
-覆盖日期锚点换算、任务抽取、来源引用、Markdown 导出和唯一命中关单。
+覆盖日期锚点换算、任务抽取、来源引用、Markdown 导出、唯一命中关单、自然语言查询和定时开放时段计算。
 
 ## 作品集说明
 
