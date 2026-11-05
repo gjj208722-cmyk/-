@@ -45,3 +45,11 @@ export async function loginAdminAgent(key) {
 export async function logoutAdminAgent() {
   return request("/api/admin/logout", { method: "POST" }, 15000);
 }
+
+export async function setAdminPublicAgent(open, minutes = 30) {
+  return request("/api/admin/public-agent", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ open, minutes })
+  }, 15000);
+}

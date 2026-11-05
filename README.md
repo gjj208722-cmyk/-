@@ -72,6 +72,7 @@ COZE_API_BASE=https://api.coze.cn
 > 保持 `PUBLIC_AGENT_ENABLED=false` 时，只有管理员可以临时解锁。设为 `true` 后，仅在 `AGENT_OPEN_WINDOWS` 列出的时段内对访客开放；没有配置时段或不在时段内时自动回落本地引擎。多个时段用英文逗号分隔，例如 `2026-11-06 09:00-10:00,2026-11-07 14:00-15:00`。
 > `AGENT_DAILY_LIMIT` 控制全站每日公开调用总量，`AGENT_RATE_LIMIT_PER_IP` / `AGENT_RATE_LIMIT_WINDOW_MINUTES` 控制单 IP 频率。管理员会话不受公开额度限制。
 > 设置 `ADMIN_AGENT_KEY` 后，打开 `/?admin=1`，进入“Agent 接入设置”并输入口令，可仅为当前浏览器开启 2 小时的管理员会话。普通访客即使手动打开该地址，没有口令也无法解锁，直接调用 `/api/agent` 同样会被拒绝。
+> 管理员登录后，设置面板会出现“公开调用开关”，可按 15 / 30 / 60 分钟临时对所有访客开放，也可随时立即关闭。该状态保存在服务进程内，重启会自动关闭；公开调用仍受每日额度和单 IP 频率限制。可通过 `AGENT_MANUAL_OPEN_MINUTES` 修改默认开放时长。
 
 5. 重启服务：
 

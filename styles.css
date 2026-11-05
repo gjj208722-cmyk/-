@@ -454,6 +454,14 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .admin-unlock-row { display: flex; gap: 8px; margin-top: 10px; }
 .admin-unlock-row .input { flex: 1; min-width: 0; }
 .admin-session { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 12px 0 0; padding: 10px 11px; border: 1px solid #cde6dd; border-radius: 9px; color: #527269; background: #f4fbf7; font-size: 9px; }
+.admin-public { margin: 10px 0 0; padding: 12px; border: 1px solid #d7e8e1; border-radius: 10px; background: #fbfefc; }
+.admin-public-head strong { display: block; color: #35564a; font-size: 10px; }
+.admin-public-head span { display: block; margin-top: 3px; color: #71877e; font-size: 8.8px; line-height: 1.55; }
+.admin-public-row { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 10px; }
+.admin-public-row .btn { flex: 1; min-width: 94px; padding-left: 9px; padding-right: 9px; }
+.admin-public-note { margin-top: 8px; color: #8b9c95; font-size: 8.2px; line-height: 1.5; }
+.btn-danger { color: #9b3d3d; border-color: #e7c6c6; background: #fff7f7; }
+.btn-danger:hover { border-color: #dca8a8; background: #fff0f0; }
 .schedule-hint { margin-top: 7px; padding: 7px 9px; border-radius: 7px; color: #3f6a5b; background: #f1faf5; font-size: 8.8px; line-height: 1.55; }
 .code-hint { padding: 8px 9px; margin-top: 8px; border-radius: 7px; color: #526b61; background: #f1f6f4; font-family: "Cascadia Mono", Consolas, monospace; font-size: 8.5px; line-height: 1.6; }
 .toast-root { position: fixed; right: 24px; bottom: 77px; z-index: 100; display: flex; flex-direction: column; align-items: flex-end; gap: 7px; pointer-events: none; }

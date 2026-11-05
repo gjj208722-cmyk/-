@@ -20,12 +20,14 @@ const AGENT_OPEN_WINDOWS = parseOpenWindows(process.env.AGENT_OPEN_WINDOWS || ""
 const AGENT_DAILY_LIMIT = positiveNumber(process.env.AGENT_DAILY_LIMIT, 50);
 const AGENT_RATE_LIMIT_PER_IP = positiveNumber(process.env.AGENT_RATE_LIMIT_PER_IP, 3);
 const AGENT_RATE_WINDOW_MS = positiveNumber(process.env.AGENT_RATE_LIMIT_WINDOW_MINUTES, 10) * 60 * 1000;
+const AGENT_MANUAL_OPEN_MINUTES = Math.min(240, positiveNumber(process.env.AGENT_MANUAL_OPEN_MINUTES, 30));
 const ADMIN_SESSION_TTL_MS = 2 * 60 * 60 * 1000;
 const ADMIN_COOKIE = "maa_admin";
 const adminSessions = new Map();
 const adminLoginAttempts = new Map();
 const publicAgentUsage = new Map();
 let publicAgentDaily = { day: "", count: 0 };
+let manualPublicOpenUntil = 0;
 
 function loadDotEnv(file) {
   try {
@@ -71,6 +73,7 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === "/api/agent" && req.method === "POST") return agent(req, res);
     if (url.pathname === "/api/admin/login" && req.method === "POST") return adminLogin(req, res);
     if (url.pathname === "/api/admin/logout" && req.method === "POST") return adminLogout(req, res);
+    if (url.pathname === "/api/admin/public-agent" && req.method === "POST") return adminPublicAgent(req, res);
     if (url.pathname.startsWith("/api/")) return json(res, 404, { ok: false, error: "接口不存在" });
     if (req.method !== "GET" && req.method !== "HEAD") return json(res, 405, { ok: false, error: "Method not allowed" });
     return serveStatic(url.pathname, req, res);
@@ -90,6 +93,10 @@ function health(req, res) {
     reason = "未配置 COZE_API_TOKEN / COZE_BOT_ID，当前使用本地演示引擎。";
   } else if (adminSession) {
     reason = "管理员会话已连接，当前浏览器可临时调用 Coze Agent。";
+  } else if (schedule.manualOpen) {
+    reason = schedule.quotaAvailable
+      ? "管理员已手动开放所有人调用。"
+      : "管理员已手动开放，但今日公开调用额度已用完。";
   } else if (!PUBLIC_AGENT_ENABLED) {
     reason = ADMIN_AGENT_KEY
       ? "远程 Agent 已锁定；仅管理员可临时解锁。"
@@ -111,9 +118,12 @@ function health(req, res) {
     agent: agentReady,
     provider: agentReady ? "coze" : "local",
     adminLocked: Boolean(AGENT_CONFIGURED && ADMIN_AGENT_KEY && !agentReady),
+    adminEnabled: Boolean(AGENT_CONFIGURED && ADMIN_AGENT_KEY),
     adminSession,
     publicOpen: schedule.open,
     publicQuotaAvailable: schedule.quotaAvailable,
+    manualOpen: schedule.manualOpen,
+    manualOpenUntil: schedule.manualOpenUntil,
     schedule,
     reason
   });
@@ -128,7 +138,7 @@ async function agent(req, res) {
   }
   const adminSession = hasAdminSession(req);
   const schedule = publicSchedule();
-  if (!adminSession && (!PUBLIC_AGENT_ENABLED || !schedule.open)) {
+  if (!adminSession && !schedule.open) {
     return json(res, 403, {
       ok: false,
       error: schedule.nextOpenAt
@@ -220,6 +230,44 @@ function adminLogout(req, res) {
   return json(res, 200, { ok: true });
 }
 
+async function adminPublicAgent(req, res) {
+  if (!AGENT_CONFIGURED) {
+    return json(res, 503, { ok: false, error: "Agent 尚未配置。" });
+  }
+  if (!hasAdminSession(req)) {
+    return json(res, 401, { ok: false, error: "请先登录管理员会话。" });
+  }
+  if (!isSameOrigin(req)) {
+    return json(res, 403, { ok: false, error: "仅允许从本站操作。" });
+  }
+
+  let body;
+  try {
+    body = await readJsonBody(req);
+  } catch (error) {
+    return json(res, 400, { ok: false, error: error.message });
+  }
+
+  const open = Boolean(body.open);
+  if (open) {
+    const requestedMinutes = Number(body.minutes);
+    const minutes = Number.isFinite(requestedMinutes) && requestedMinutes > 0
+      ? Math.min(240, requestedMinutes)
+      : AGENT_MANUAL_OPEN_MINUTES;
+    manualPublicOpenUntil = Date.now() + minutes * 60 * 1000;
+  } else {
+    manualPublicOpenUntil = 0;
+  }
+
+  const schedule = publicSchedule();
+  return json(res, 200, {
+    ok: true,
+    manualOpen: schedule.manualOpen,
+    manualOpenUntil: schedule.manualOpenUntil,
+    schedule
+  });
+}
+
 function hasAdminSession(req) {
   const token = parseCookies(req.headers.cookie || "")[ADMIN_COOKIE];
   if (!token) return false;
@@ -256,7 +304,7 @@ function clientIp(req) {
 function publicSchedule(now = new Date()) {
   const day = zonedDayKey(now, AGENT_TIMEZONE);
   if (publicAgentDaily.day !== day) publicAgentDaily = { day, count: 0 };
-  return getScheduleState({
+  const scheduled = getScheduleState({
     enabled: PUBLIC_AGENT_ENABLED,
     windows: AGENT_OPEN_WINDOWS,
     timeZone: AGENT_TIMEZONE,
@@ -264,6 +312,16 @@ function publicSchedule(now = new Date()) {
     dailyLimit: AGENT_DAILY_LIMIT,
     dailyCount: publicAgentDaily.count
   });
+  const manualOpen = manualPublicOpenUntil > now.getTime();
+  if (!manualOpen) manualPublicOpenUntil = 0;
+  return {
+    ...scheduled,
+    scheduledOpen: scheduled.open,
+    manualOpen,
+    manualOpenUntil: manualOpen ? new Date(manualPublicOpenUntil).toISOString() : null,
+    open: scheduled.open || manualOpen,
+    currentWindow: manualOpen ? "管理员手动开放" : scheduled.currentWindow
+  };
 }
 
 function consumePublicAgentQuota(ip) {

@@ -19,7 +19,7 @@ import {
   taskStats
 } from "./engine.js";
 import { buildSeedState, defaultDraft, emptyDraftFromSample, participantsLibrary, sampleTranscripts } from "./data.js";
-import { checkAgentHealth, loginAdminAgent, logoutAdminAgent, runRemoteAgent } from "./api.js";
+import { checkAgentHealth, loginAdminAgent, logoutAdminAgent, runRemoteAgent, setAdminPublicAgent } from "./api.js";
 
 const STORAGE_KEY = "meeting-action-agent:web:v2";
 const PROCESS_STEPS = ["解析文本", "抽取事实", "逐条落库", "生成文档"];
@@ -45,6 +45,7 @@ let ui = {
   health: { ok: false, mode: "checking", agent: false, reason: "正在检测 Agent 服务…" },
   settingsOpen: false,
   adminBusy: false,
+  publicBusy: false,
   modal: null,
   pendingStatus: null,
   lastProcessed: null
@@ -54,6 +55,12 @@ const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 const icon = (name) => `<svg aria-hidden="true"><use href="#i-${name}"/></svg>`;
 const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" }[char]));
+const formatClock = (value) => {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? ""
+    : date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
+};
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function loadState() {
@@ -726,15 +733,23 @@ function scrollChatBottom() {
 function renderSettingsModal() {
   const remote = ui.health.agent;
   const adminLocked = Boolean(ui.health.adminLocked);
+  const adminOnline = Boolean(ui.health.adminSession);
   const schedule = ui.health.schedule || {};
   const publicOpen = Boolean(schedule.open);
+  const scheduledOpen = Boolean(schedule.scheduledOpen);
+  const manualOpen = Boolean(ui.health.manualOpen || schedule.manualOpen);
+  const manualUntil = formatClock(ui.health.manualOpenUntil || schedule.manualOpenUntil);
   const publicQuotaAvailable = schedule.quotaAvailable !== false;
-  const adminActive = remote && Boolean(ui.health.adminSession);
+  const adminActive = remote && adminOnline;
   const selected = state.settings.engine === "coze" && remote ? "coze" : "local";
   const cozeStatus = remote
-    ? publicOpen && !adminActive
-      ? "定时开放中"
-      : "已解锁"
+    ? manualOpen
+      ? "公开开放中"
+      : adminOnline
+        ? "管理员已解锁"
+        : scheduledOpen
+          ? "定时开放中"
+          : "公开开放中"
     : adminLocked
       ? "管理员锁定"
       : schedule.enabled
@@ -742,12 +757,14 @@ function renderSettingsModal() {
           ? "额度已用完"
           : "等待开放"
         : "未配置";
-  const statusTitle = remote
-    ? adminActive
-      ? "管理员会话已连接"
-      : publicOpen
-        ? "Agent 定时开放中"
-        : "服务端代理已连接"
+  const statusTitle = manualOpen
+    ? adminOnline ? "已对所有人开放" : "Agent 公开开放中"
+    : remote
+      ? adminActive
+        ? "管理员会话已连接"
+        : publicOpen
+          ? "Agent 定时开放中"
+          : "服务端代理已连接"
     : adminLocked
       ? "Coze Agent 已锁定"
       : schedule.enabled
@@ -755,28 +772,47 @@ function renderSettingsModal() {
           ? "今日公开额度已用完"
           : "Agent 等待开放"
         : "当前未检测到 Agent 服务";
-  const scheduleLabel = schedule.enabled
-    ? publicOpen && publicQuotaAvailable
-      ? `定时开放中：${schedule.currentWindow || "当前时段"} · 今日剩余 ${schedule.remainingToday ?? 0} 次`
-      : publicOpen
-        ? "当前时段已开放，但今日公开额度已用完。"
-        : schedule.nextOpenAt
-          ? `当前关闭 · 下次开放 ${schedule.nextOpenAt}`
-          : "当前关闭 · 尚未配置可用开放时段"
-    : "";
+  const scheduleLabel = manualOpen
+    ? publicQuotaAvailable
+      ? `公开开放至 ${manualUntil || "管理员关闭"} · 今日剩余 ${schedule.remainingToday ?? 0} 次`
+      : "公开开放中，但今日公开额度已用完。"
+    : schedule.enabled
+      ? publicOpen && publicQuotaAvailable
+        ? `定时开放中：${schedule.currentWindow || "当前时段"} · 今日剩余 ${schedule.remainingToday ?? 0} 次`
+        : publicOpen
+          ? "当前时段已开放，但今日公开额度已用完。"
+          : schedule.nextOpenAt
+            ? `当前关闭 · 下次开放 ${schedule.nextOpenAt}`
+            : "当前关闭 · 尚未配置可用开放时段"
+      : "";
   const scheduleHint = scheduleLabel ? `<div class="schedule-hint">${esc(scheduleLabel)}</div>` : "";
   const setupHint = !remote && !adminLocked && !schedule.enabled ? `<div class="code-hint">COZE_API_TOKEN=...<br>COZE_BOT_ID=...<br>node server.mjs</div>` : "";
-  const adminBlock = ADMIN_PANEL && adminLocked ? `
+  const adminLoginBlock = ADMIN_PANEL && !adminOnline && (ui.health.adminEnabled || adminLocked) ? `
           <div class="admin-unlock">
             <div class="admin-unlock-head"><strong>管理员临时解锁</strong><span>输入服务端口令；仅当前浏览器 2 小时内可使用，普通访客无法选择或调用 Coze。</span></div>
             <div class="admin-unlock-row">
               <input class="input" id="admin-agent-key" type="password" autocomplete="current-password" placeholder="管理员口令" ${ui.adminBusy ? "disabled" : ""} />
               <button class="btn btn-primary" type="button" data-action="admin-unlock" ${ui.adminBusy ? "disabled" : ""}>${ui.adminBusy ? "解锁中…" : "解锁"}</button>
             </div>
-          </div>` : remote && ui.health.adminSession ? `
+          </div>` : "";
+  const adminSessionBlock = ADMIN_PANEL && adminOnline ? `
           <div class="admin-session">
             <span>管理员会话已启用，最多持续 2 小时。</span>
             <button class="text-action" type="button" data-action="admin-lock">立即锁定</button>
+          </div>
+          <div class="admin-public">
+            <div class="admin-public-head">
+              <strong>公开调用开关</strong>
+              <span>${manualOpen
+                ? `所有访客现在都可调用 Coze${manualUntil ? `，${manualUntil} 自动关闭` : ""}。`
+                : "当前只有你能调用。点击后，所有访客在所选时间内都能使用真实 Agent。"}</span>
+            </div>
+            <div class="admin-public-row">
+              ${manualOpen
+                ? `<button class="btn btn-danger" type="button" data-action="admin-public-close" ${ui.publicBusy ? "disabled" : ""}>${ui.publicBusy ? "处理中…" : "立即关闭公开访问"}</button>`
+                : [15, 30, 60].map((minutes) => `<button class="btn ${minutes === 30 ? "btn-primary" : "btn-ghost"}" type="button" data-action="admin-public-open" data-minutes="${minutes}" ${ui.publicBusy ? "disabled" : ""}>开放 ${minutes} 分钟</button>`).join("")}
+            </div>
+            <div class="admin-public-note">公开调用仍受每日额度和单 IP 频率限制；服务重启会自动关闭。</div>
           </div>` : "";
   $("#modal-root").innerHTML = `
     <div class="modal-overlay" data-action="close-modal">
@@ -794,7 +830,8 @@ function renderSettingsModal() {
             <input type="radio" name="engine" ${selected === "coze" ? "checked" : ""} ${remote ? "" : "disabled"} />
             <span><strong>Coze Agent API · ${cozeStatus}</strong><span>前端只请求 <span class="mono">/api/agent</span>；Node 服务验证开放时段或管理员会话后才会调用 Coze。</span></span>
           </label>
-          ${adminBlock}
+          ${adminLoginBlock}
+          ${adminSessionBlock}
           <div class="settings-status">
             ${icon(remote ? "check" : "link")}
             <div><strong>${statusTitle}</strong><br>${esc(ui.health.reason || "使用本地演示引擎即可完整运行。")}${scheduleHint}${setupHint}</div>
@@ -1200,6 +1237,22 @@ async function lockAdminAgent() {
   showToast("管理员会话已结束，Coze 已重新锁定。", "success");
 }
 
+async function setPublicAgentAccess(open, minutes = 30) {
+  if (ui.publicBusy) return;
+  ui.publicBusy = true;
+  renderSettingsModal();
+  try {
+    await setAdminPublicAgent(open, minutes);
+    await refreshHealth(false);
+    showToast(open ? `已对所有人开放 Agent 调用 ${minutes} 分钟。` : "已关闭所有人的 Agent 调用。", "success");
+  } catch (error) {
+    showToast(error.message || "操作失败。", "error");
+  } finally {
+    ui.publicBusy = false;
+    renderSettingsModal();
+  }
+}
+
 async function refreshHealth(showFeedback = true) {
   ui.health = await checkAgentHealth();
   if (!ui.health.agent && state.settings.engine === "coze") state.settings.engine = "local";
@@ -1250,7 +1303,7 @@ function handleClick(event) {
 
   const actionButton = event.target.closest("[data-action]");
   if (!actionButton) return;
-  const { action, id, filter, text, engine } = actionButton.dataset;
+  const { action, id, filter, text, engine, minutes } = actionButton.dataset;
   if (!action) return;
 
   event.preventDefault();
@@ -1265,6 +1318,8 @@ function handleClick(event) {
     "select-engine": () => selectEngine(engine),
     "admin-unlock": () => unlockAdminAgent(),
     "admin-lock": () => lockAdminAgent(),
+    "admin-public-open": () => setPublicAgentAccess(true, Number(minutes || 30)),
+    "admin-public-close": () => setPublicAgentAccess(false),
     "reset-demo": () => resetDemo(),
     "ledger-filter": () => { state.ui.ledgerFilter = filter; render(); },
     "open-meeting": () => openMeeting(id),
@@ -1404,6 +1459,10 @@ function init() {
   $("#menu-toggle")?.addEventListener("click", () => $("#app-shell")?.classList.toggle("sidebar-open"));
   $("#agent-fab")?.addEventListener("click", openDrawer);
   refreshHealth(false);
+  setInterval(() => refreshHealth(false), 30000);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") refreshHealth(false);
+  });
 }
 
 init();
