@@ -64,7 +64,7 @@ COZE_API_BASE=https://api.coze.cn
 > 国内版 Coze 使用 `https://api.coze.cn`；国际版使用 `https://api.coze.com`。
 > 当前项目调用的是 Coze Chat API，不使用 Coze Web Chat SDK。项目需要的是 `pat_` 个人访问令牌，不是 `cli_` 开头的 OAuth 客户端 ID 与 Secret。
 > `PUBLIC_AGENT_ENABLED` 只有显式设为 `true` 才会对所有访客开放 `/api/agent`。公网部署必须保持 `false`，否则任何访客都可能消耗你的 Coze 额度。
-> 设置 `ADMIN_AGENT_KEY` 后，打开 `/?admin=1`，进入“Agent 接入设置”并输入口令，可仅为当前浏览器开启 2 小时的管理员会话。普通访客看不到解锁入口，也不能调用 `/api/agent`。
+> 设置 `ADMIN_AGENT_KEY` 后，打开 `/?admin=1`，进入“Agent 接入设置”并输入口令，可仅为当前浏览器开启 2 小时的管理员会话。普通访客即使手动打开该地址，没有口令也无法解锁，直接调用 `/api/agent` 同样会被拒绝。
 
 5. 重启服务：
 
@@ -88,7 +88,7 @@ node server.mjs
 
 ## 部署
 
-项目包含 `Dockerfile` 与 `render.yaml`，可以部署到任意支持 Node 20+ 的容器或 PaaS。部署后在平台环境变量中配置 `COZE_API_TOKEN` 与 `COZE_BOT_ID`，不要在浏览器端或仓库里保存 Token。
+项目包含 `Dockerfile` 与 `render.yaml`，可以部署到任意支持 Node 20+ 的容器或 PaaS。部署后在平台环境变量中配置 `COZE_API_TOKEN`、`COZE_BOT_ID`，并保持 `PUBLIC_AGENT_ENABLED=false`；如需管理员临时解锁，再增加一个高强度的 `ADMIN_AGENT_KEY`。不要把 Token 或管理员口令写进浏览器端代码或仓库。
 
 ## 测试
 
