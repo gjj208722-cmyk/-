@@ -1306,6 +1306,8 @@ function handleClick(event) {
   const { action, id, filter, text, engine, minutes } = actionButton.dataset;
   if (!action) return;
 
+  if (action === "close-modal" && actionButton.classList.contains("modal-overlay") && event.target !== actionButton) return;
+
   event.preventDefault();
   const actions = {
     process: () => processDraft(),
