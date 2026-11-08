@@ -188,19 +188,175 @@ function cleanTaskTitle(value, context = "") {
     title = `提交${title}`;
   }
 
-  return title.replace(/\s{2,}/g, " ").trim();
+  return compactTaskTitle(title, context);
 }
 
-function titleFromSegment(segment, due) {
+const TITLE_ACTION_RULES = [
+  ["搭建", "搭建"],
+  ["汇总", "汇总"],
+  ["统筹", "统筹"],
+  ["提交", "提交"],
+  ["确认", "确认"],
+  ["对接", "对接"],
+  ["跟进", "跟进"],
+  ["更新", "更新"],
+  ["修改", "修改"],
+  ["整理", "整理"],
+  ["补充", "补充"],
+  ["确定", "确定"],
+  ["完成", "完成"],
+  ["输出", "输出"],
+  ["准备", "准备"],
+  ["撰写", "撰写"],
+  ["检查", "检查"],
+  ["分析", "分析"],
+  ["改", "修改"],
+  ["补", "补充"],
+  ["写", "撰写"],
+  ["跑", "运行"],
+  ["做", "完成"],
+  ["定", "确定"],
+  ["交", "提交"]
+];
+
+const TITLE_NOUN_PATTERN = /(书面报告|文字稿|现状数据|中期汇报|框架|PPT|pptx|方案|底图|总图|问卷|数据|报告|文档|初稿|摘要|分析|材料|模型|结果|表格|清单|分工|纪要)/;
+
+function limitTitle(value) {
+  let title = String(value || "")
+    .replace(/\s+/g, "")
+    .replace(/[，,。；;：:！!？?、…]+$/g, "")
+    .trim();
+  if (title.length > 24) title = title.slice(0, 24).replace(/[的和与及]+$/, "");
+  return title;
+}
+
+function cleanTitleText(value) {
+  return String(value || "")
+    .replace(/^(?:那|那个|这个|接下来|然后|另外|就是|我们|大家|咱们|你|您|先|再|关于|对于|以及|还有|同时)+/, "")
+    .replace(/[吧啊呀呢哈嘛哦]+$/g, "")
+    .replace(/[，,。；;：:！!？?、\s]+$/g, "")
+    .trim();
+}
+
+function cutTitleAtCondition(value) {
+  return String(value || "").split(/(?:如果|要是|的话|也就是|因为|但是|不过|否则|不然|同时|另外|然后)/)[0];
+}
+
+function cleanTitleObject(value) {
+  return cutTitleAtCondition(value)
+    .replace(/^(?:一下|一份|一个|这个|那个|你手头有|我手头有|手头有|每个人|自己那部分的|把自己那部分的|那部分的)+/, "")
+    .replace(/(?:吧|啊|呀|呢|哈|了|一下|一份|给我|发我|交给我|同步给我|发群里|即可|就行|好吗|可以吗)+$/g, "")
+    .replace(/^(?:把|将)/, "")
+    .replace(/[，,。；;：:！!？?、\s]+/g, "")
+    .replace(/的(?=PPT|pptx|框架|数据|报告|方案|分工|纪要|清单|表格)/g, "")
+    .replace(/^[的地得]+/, "")
+    .trim();
+}
+
+function findTitleAction(clause) {
+  let best = null;
+  for (const [token, label] of TITLE_ACTION_RULES) {
+    const index = clause.indexOf(token);
+    if (index < 0) continue;
+    if (!best || index < best.index || (index === best.index && token.length > best.token.length)) {
+      best = { token, label, index };
+    }
+  }
+  return best;
+}
+
+function findStrongTitleAction(text) {
+  let best = null;
+  for (const [token, label] of TITLE_ACTION_RULES) {
+    if (token.length < 2) continue;
+    const index = String(text || "").indexOf(token);
+    if (index < 0) continue;
+    if (!best || index < best.index) best = { token, label, index };
+  }
+  return best;
+}
+
+export function compactTaskTitle(value, context = "") {
+  const text = String(value || "")
+    .replace(/[，,。；;：:！!？?、…]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!text) return "";
+
+  const composite = text.match(/(汇总|整理|做|写|准备)([^。！？!?]*?)(PPT|ppt|幻灯片|演示文稿)([^。！？!?]*?)之前把([^。！？!?]*?)(搭|做|写|整理)(?:出来|好)/);
+  if (composite) {
+    const core = cleanTitleObject(`${composite[2]}${composite[3]}${composite[5]}`);
+    if (core) return limitTitle(`搭建${core}`);
+  }
+
+  const selfAction = text.match(/我来\s*(统筹|汇总|负责|整理|写|做|对接|跟进)/);
+  if (selfAction) {
+    const labelMap = { 统筹: "统筹", 汇总: "汇总", 负责: "负责", 整理: "整理", 写: "撰写", 做: "完成", 对接: "对接", 跟进: "跟进" };
+    const noun = (String(context || "").match(TITLE_NOUN_PATTERN) || [])[0] || "";
+    if (noun) return limitTitle(`${labelMap[selfAction[1]] || selfAction[1]}${noun}`);
+  }
+
+  const clauses = text.split(/\s+/).map(cleanTitleText).filter(Boolean);
+  let best = null;
+  for (let i = 0; i < clauses.length; i += 1) {
+    const clause = clauses[i];
+    const action = findTitleAction(clause);
+    if (!action) continue;
+
+    const before = clause.slice(0, action.index);
+    const after = clause.slice(action.index + action.token.length);
+    let object = /[把将]/.test(before)
+      ? before.slice(Math.max(before.lastIndexOf("把"), before.lastIndexOf("将")) + 1)
+      : after;
+    object = cleanTitleObject(object);
+    if (TITLE_ACTION_RULES.some(([token]) => token === object)) object = "";
+
+    if (!object) {
+      for (let j = i + 1; j < clauses.length; j += 1) {
+        if (findTitleAction(clauses[j])) break;
+        const candidate = cleanTitleObject(clauses[j]);
+        if (candidate && candidate.length >= 2) {
+          object = candidate;
+          break;
+        }
+      }
+    }
+
+    const score = (object ? 10 : 0) + (i === 0 ? 2 : 0) + (action.token.length >= 2 ? 1 : 0);
+    if (!best || score > best.score) best = { action, object, score };
+  }
+
+  if (best) {
+    let title = `${best.action.label}${best.object}`;
+    if (!best.object && context) {
+      const noun = (String(context).match(TITLE_NOUN_PATTERN) || [])[0] || "";
+      if (noun && !title.includes(noun)) title += noun;
+    }
+    return limitTitle(title);
+  }
+
+  let fallback = cutTitleAtCondition(text)
+    .replace(/^(?:那|那个|这个|接下来|然后|另外|就是|我们|大家|咱们|你|您|先|再)+/, "")
+    .replace(/[，,。；;：:！!？?、\s]+/g, "")
+    .replace(/[吧啊呀呢哈嘛哦]+$/g, "")
+    .trim();
+  if (fallback && text.length >= 12 && context && !findTitleAction(fallback)) {
+    const hinted = findStrongTitleAction(context);
+    if (hinted) fallback = `${hinted.label}${fallback}`;
+  }
+  return limitTitle(fallback);
+}
+
+function titleFromSegment(segment, due, actionHint = "") {
   let fragment = String(segment || "");
   if (due?.matched) fragment = fragment.replace(due.matched, " ");
   fragment = fragment
     .replace(/(?:之前|以前|前)?(?:给我|发我|交给我|同步给我|一起给我|发群里)/g, " ")
     .replace(/一起|同步|也/g, " ")
     .replace(/(?:更新完|完成|做完|跑完|弄完|好了|即可)/g, " ")
-    .replace(/[，,。；;：:！!？?、]+/g, " ")
+    .replace(/[，,。；;：:！!？?、…]+/g, " ")
     .trim();
-  return cleanTaskTitle(fragment, segment);
+  return cleanTaskTitle(fragment, `${actionHint} ${segment}`.trim());
 }
 
 function makeTask(meeting, payload) {
@@ -288,7 +444,7 @@ export function extractTasks(meeting) {
     const addressed = content.match(addressPattern);
     if (addressed && knownNames.has(addressed[1])) {
       const due = resolveChineseDate(addressed[2], meeting.date);
-      const title = titleFromSegment(addressed[2], due);
+      const title = titleFromSegment(addressed[2], due, addressed[0].slice(addressed[1].length, addressed[0].length - addressed[2].length));
       if (title) {
         push(makeTask(meeting, {
           title,

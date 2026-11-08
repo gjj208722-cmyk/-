@@ -3,6 +3,7 @@ import {
   answerQuery,
   buildMarkdown,
   buildMeetingResult,
+  compactTaskTitle,
   confidenceLabel,
   daysBetween,
   endOfWeek,
@@ -72,6 +73,9 @@ function loadState() {
     for (const meeting of parsed.meetings) {
       for (const task of meeting.tasks || []) {
         if (task.due && !/^\d{4}-\d{2}-\d{2}$/.test(task.due)) task.due = formatDate(task.due);
+        if (task.title && !task.edited) {
+          task.title = compactTaskTitle(task.title, task.sourceQuote || meeting.transcript || "");
+        }
       }
     }
     parsed.meetings = dedupeMeetings(parsed.meetings);
@@ -972,7 +976,7 @@ function meetingFromRemote(base, payload, durationSec) {
     else if (!["clear", "inferred", "needs", "edited"].includes(confidence)) confidence = "clear";
     return {
       id: task.id || `${id}-task-${index + 1}`,
-      title: String(task.title || "未命名任务").trim(),
+      title: compactTaskTitle(String(task.title || "未命名任务").trim(), task.sourceQuote || task.source_quote || ""),
       owner,
       due,
       status: ["todo", "doing", "done"].includes(task.status) ? task.status : "todo",
