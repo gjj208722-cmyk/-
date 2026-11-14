@@ -606,7 +606,6 @@ function renderDashboard() {
       <div class="section-title-row">
         <div>
           <h2>质量看板</h2>
-          <p>这里只展示当前演示空间可计算的数据，不把自测样本包装成线上经营指标。</p>
         </div>
         <span class="source-badge">Phase 1 自测</span>
       </div>
